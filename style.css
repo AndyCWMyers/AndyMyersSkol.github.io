@@ -38,7 +38,7 @@ h1 {
 
 .bio p {
     color: #333;
-    line-height: 1.6;
+    line-height: 1.55;
 }
 
 .bio h1 {
@@ -167,7 +167,6 @@ a:hover {
     text-overflow: ellipsis; /* Adds an ellipsis to indicate overflowed content */
     max-width: 100%; /* Ensures these elements do not exceed the container's width */
 }
-
 
 
 

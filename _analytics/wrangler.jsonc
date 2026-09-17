@@ -1,0 +1,23 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "andrew-myers-analytics",
+  "main": "src/worker.mjs",
+  "compatibility_date": "2026-09-16",
+  "account_id": "c946b83f25bf9b04260b7996c77cfa83",
+  "workers_dev": false,
+  "preview_urls": false,
+  "observability": { "enabled": false },
+  "d1_databases": [{
+    "binding": "DB",
+    "database_name": "andrew-myers-website-analytics",
+    "database_id": "f99f190d-6f62-4810-9019-66d41ac6056f"
+  }],
+  "vars": { "GA_MEASUREMENT_ID": "G-82ZD3DWY3B" },
+  "routes": [
+    { "pattern": "www.andrewcwmyers.com/*", "zone_name": "andrewcwmyers.com" },
+    { "pattern": "andrewcwmyers.com/*", "zone_name": "andrewcwmyers.com" }
+  ],
+  "ratelimits": [
+    { "name": "COLLECT_LIMIT", "namespace_id": "1001", "simple": { "limit": 60, "period": 60 } }
+  ]
+}

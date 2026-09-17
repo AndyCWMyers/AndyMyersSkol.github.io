@@ -1,0 +1,18 @@
+CREATE TABLE IF NOT EXISTS events (
+  id TEXT PRIMARY KEY,
+  occurred_at INTEGER NOT NULL,
+  kind TEXT NOT NULL,
+  path TEXT NOT NULL,
+  target TEXT NOT NULL DEFAULT '',
+  referrer TEXT NOT NULL DEFAULT '',
+  source TEXT NOT NULL DEFAULT '',
+  medium TEXT NOT NULL DEFAULT '',
+  campaign TEXT NOT NULL DEFAULT '',
+  country TEXT NOT NULL DEFAULT '',
+  region TEXT NOT NULL DEFAULT '',
+  browser TEXT NOT NULL DEFAULT '',
+  device TEXT NOT NULL DEFAULT '',
+  bot INTEGER NOT NULL DEFAULT 0,
+  status INTEGER NOT NULL DEFAULT 200
+);
+CREATE INDEX IF NOT EXISTS events_time ON events(occurred_at);

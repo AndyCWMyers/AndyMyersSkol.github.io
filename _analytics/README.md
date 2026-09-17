@@ -40,12 +40,32 @@ There is no SQL endpoint and alternate Workers hostnames are disabled.
 - `page_view`: visible HTML page observed by the browser script.
 - `page_request`: HTML retrieval through Cloudflare.
 - `pdf_request`: successful initial PDF retrieval (200/206/304 when a PDF content
-  type is supplied). Nonzero byte ranges are excluded. Anonymous initial-range
-  retries can still inflate counts. Cached/offline reads are not observable.
+  type is supplied). Nonzero byte ranges are excluded. Repeated retrievals of the
+  same PDF with the same browser cookie within five seconds count once. Very quick
+  intentional reopens also coalesce; anonymous retries can still inflate counts.
+  Cached/offline reads are not observable.
 - `pdf_click`: a website link click, distinct from retrieval.
 - `outbound_click`: an external HTTP(S) link, including WSJ, without query/hash.
 
 ## Own Visits And Distinct Browsers
+
+Migration `0008_client_metadata.sql` adds OS family (from the request user agent)
+and nullable `bot_score` (only the edge's `cf.botManagement.score`, integer 1-99).
+Missing scores are not zero and are never inferred from the existing UA bot flag.
+Numerical scores require Cloudflare Enterprise Bot Management; no plan change is
+made here. Browser/device reports also group by OS, and user profiles/histories
+expose the latest/per-event values. Neither field is backfilled for older events.
+https://developers.cloudflare.com/bots/plans/bm-subscription/
+
+Migration `0007_pdf_duplicates.sql` retains raw retrieval rows with `duplicate_of`
+pointing to the counted request. A single atomic INSERT decides this at collection
+time, including concurrent requests reaching separate Workers. The first counted
+retrieval anchors the five-second window; retries do not extend it. No IP-based
+matching is used. Reports, totals, maps, exports and user/IP histories omit flagged
+rows. GA4 forwarding waits for that same decision, without delaying PDF delivery.
+If the database write fails, the PDF still loads but no unverified GA event is sent.
+The migration flags only historical same-second matching 200-then-304 pairs with
+known browser identities. It deletes nothing and does not alter old GA4 events.
 
 Open `https://www.andrewcwmyers.com/__analytics/preferences` in each browser/profile
 used on the Mac Pro, MacBook Air, and iPhone. Check **Host**; changes save automatically.

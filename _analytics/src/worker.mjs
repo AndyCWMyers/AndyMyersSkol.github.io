@@ -34,7 +34,10 @@ export function agentInfo(ua = "") {
   const bot = /bot|crawler|spider|slurp|headless|curl|wget|python|httpclient|facebookexternalhit|preview|fetcher/i.test(ua) ? 1 : 0;
   const browser = /Edg\//.test(ua) ? "Edge" : /Firefox\//.test(ua) ? "Firefox" : /Chrome\/|CriOS\//.test(ua) ? "Chrome" : /Safari\//.test(ua) ? "Safari" : "Other";
   const device = /iPad|Tablet/i.test(ua) ? "Tablet" : /Mobile|Android|iPhone/i.test(ua) ? "Mobile" : "Desktop";
-  return { bot, browser, device };
+  const os = /Windows Phone/i.test(ua) ? "Windows Phone" : /Android/i.test(ua) ? "Android"
+    : /iPhone|iPad|iPod/i.test(ua) ? "iOS" : /CrOS/i.test(ua) ? "ChromeOS" : /Windows/i.test(ua) ? "Windows"
+    : /Macintosh|Mac OS X/i.test(ua) ? "macOS" : /Linux/i.test(ua) ? "Linux" : "";
+  return { bot, browser, device, os };
 }
 
 function json(value, status = 200) {
@@ -77,6 +80,7 @@ function metadata(request) {
   const referrerStatus = referrer ? "known" : request.headers.has("Referer") ? "unknown" : "direct";
   const campaign = (key) => (url.searchParams.get(key) || "").replace(/[^a-zA-Z0-9_. -]/g, "").slice(0, 100);
   return { ...info, ...estimatedCounty(cf), referrer, referrerStatus, country: String(cf.country || "").slice(0, 2), region: String(cf.regionCode || "").slice(0, 20),
+    bot_score: Number.isInteger(cf.botManagement?.score) && cf.botManagement.score >= 1 && cf.botManagement.score <= 99 ? cf.botManagement.score : null,
     city: typeof cf.city === "string" ? cf.city.replace(/[\u0000-\u001f\u007f]/g, "").trim().slice(0, 100) : "",
     source: campaign("utm_source"), medium: campaign("utm_medium"), campaign: campaign("utm_campaign") };
 }
@@ -89,14 +93,26 @@ function browserAttribution(body) {
 }
 
 async function record(request, env, event) {
-  if (!env.DB || optedOut(request)) return;
+  if (!env.DB || optedOut(request)) return false;
   const m = { ...metadata(request), ...event.attribution };
   const visitor = event.visitorId ? await visitorHash(event.visitorId) : "";
+  const id = event.id || crypto.randomUUID(), now = Math.floor(Date.now() / 1000);
+  // One atomic insert handles concurrent PDF retries across Worker instances.
+  // Keep the raw row; the earliest counted retrieval anchors a five-second window.
   await env.DB.prepare(`INSERT OR IGNORE INTO events
-    (id, occurred_at, kind, path, target, referrer, source, medium, campaign, country, region, browser, device, bot, status, visitor_hash, referrer_status, is_personal, county, county_fips, ip_address, city)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-    .bind(event.id || crypto.randomUUID(), Math.floor(Date.now() / 1000), event.kind, event.path, event.target || "",
-      m.referrer, m.source, m.medium, m.campaign, m.country, m.region, m.browser, m.device, m.bot, event.status || 200, visitor, m.referrerStatus, personalBrowser(request) ? 1 : 0, m.county, m.county_fips, connectingIp(request), m.city).run();
+    (id, occurred_at, kind, path, target, referrer, source, medium, campaign, country, region, browser, device, bot, status, visitor_hash, referrer_status, is_personal, county, county_fips, ip_address, city, os, bot_score, duplicate_of)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+      CASE WHEN ? = 'pdf_request' AND ? != '' THEN COALESCE((
+        SELECT id FROM events WHERE kind = 'pdf_request' AND duplicate_of = ''
+          AND visitor_hash = ? AND path = ? AND occurred_at BETWEEN ? AND ?
+        ORDER BY occurred_at, rowid LIMIT 1
+      ), '') ELSE '' END)`)
+    .bind(id, now, event.kind, event.path, event.target || "",
+      m.referrer, m.source, m.medium, m.campaign, m.country, m.region, m.browser, m.device, m.bot, event.status || 200, visitor, m.referrerStatus, personalBrowser(request) ? 1 : 0, m.county, m.county_fips, connectingIp(request), m.city, m.os, m.bot_score,
+      event.kind, visitor, visitor, event.path, now - 5, now).run();
+  if (event.kind !== 'pdf_request') return true;
+  const stored = await env.DB.prepare("SELECT duplicate_of FROM events WHERE id = ?").bind(id).all();
+  return stored.results[0]?.duplicate_of === '';
 }
 
 function background(ctx, promise) {
@@ -153,7 +169,7 @@ async function report(request, env) {
   const filter = url.searchParams.get("excludePersonal") ?? "1";
   if (!["0", "1"].includes(filter)) return json({ error: "Invalid personal-activity filter" }, 400);
   const excludePersonal = filter === "1";
-  const period = "occurred_at >= ? AND occurred_at < ?";
+  const period = "occurred_at >= ? AND occurred_at < ? AND duplicate_of = ''";
   const personal = "(is_personal = 1 OR visitor_hash IN (SELECT visitor_hash FROM personal_visitors))";
   const where = `${period}${excludePersonal ? ` AND NOT ${personal}` : ""}`;
   if (url.searchParams.get("view") === "users") {
@@ -171,7 +187,7 @@ async function report(request, env) {
   const inboundSource = "CASE WHEN referrer_status = 'known' THEN referrer WHEN referrer_status = 'direct' THEN '__direct__' ELSE '__unknown__' END";
   // Fixed dimensions stay scoped to each destination.
   const dimensions = [
-    ["geography", "country", "region"], ["browsers", "browser", "''"], ["devices", "device", "''"],
+    ["geography", "country", "region"], ["browsers", "browser", "''"], ["devices", "device", "os"],
     ["sources", inboundSource, "''"], ["campaigns", "source", "medium || CASE WHEN campaign != '' THEN ' / ' || campaign ELSE '' END"],
   ];
   const breakdowns = dimensions.map(([dimension, value, detail]) => `SELECT section, name, '${dimension}' AS dimension,
@@ -186,7 +202,7 @@ async function report(request, env) {
     query(`SELECT target AS name, COUNT(*) AS count FROM events WHERE ${where} AND bot = 0 AND kind = 'outbound_click' GROUP BY target ORDER BY count DESC LIMIT 100`),
     query(`SELECT country AS name, kind, COUNT(*) AS count FROM events WHERE ${where} AND bot = 0 AND kind IN ('page_view','pdf_request','outbound_click') GROUP BY country, kind ORDER BY count DESC`),
     query(`SELECT ${inboundSource} AS name, kind, COUNT(*) AS count FROM events WHERE ${where} AND bot = 0 AND kind IN ('page_view','pdf_request','outbound_click') GROUP BY name, kind ORDER BY count DESC`),
-    query(`SELECT browser AS name, device, kind, COUNT(*) AS count FROM events WHERE ${where} AND bot = 0 AND kind IN ('page_view','pdf_request','outbound_click') GROUP BY browser, device, kind ORDER BY count DESC`),
+    query(`SELECT browser AS name, device, os, kind, COUNT(*) AS count FROM events WHERE ${where} AND bot = 0 AND kind IN ('page_view','pdf_request','outbound_click') GROUP BY browser, device, os, kind ORDER BY count DESC`),
     query(`SELECT source, medium, campaign, COUNT(*) AS count FROM events WHERE ${where} AND bot = 0 AND source != '' GROUP BY source, medium, campaign ORDER BY count DESC LIMIT 100`),
     query(`SELECT COUNT(DISTINCT NULLIF(visitor_hash, '')) AS visitors, COUNT(NULLIF(visitor_hash, '')) AS identifiedRequests, COUNT(*) - COUNT(NULLIF(visitor_hash, '')) AS unidentifiedRequests FROM events WHERE ${where} AND bot = 0 AND kind = 'pdf_request'`),
     query(`SELECT path AS name, COUNT(DISTINCT NULLIF(visitor_hash, '')) AS visitors, COUNT(NULLIF(visitor_hash, '')) AS identifiedRequests, COUNT(*) - COUNT(NULLIF(visitor_hash, '')) AS unidentifiedRequests FROM events WHERE ${where} AND bot = 0 AND kind = 'pdf_request' GROUP BY path ORDER BY COUNT(*) DESC LIMIT 100`),
@@ -221,7 +237,7 @@ async function report(request, env) {
     counties: results[14].results, countyViews: results[15].results,
     cities: results[17].results,
     gaPropertyId: "465165532", gaMeasurementId: env.GA_MEASUREMENT_ID, gaPdfForwarding: Boolean(env.GA_API_SECRET && env.GA_MEASUREMENT_ID),
-    notes: ["PDF requests are retrieval starts, not confirmed reads. Nonzero byte ranges are excluded; anonymous retries can still count twice.",
+    notes: ["PDF requests are retrieval starts, not confirmed reads. Same-browser/same-PDF retrievals within five seconds are counted once. Nonzero byte ranges are excluded; unidentified retries can still count twice.",
       "Distinct visitors are estimated browsers, not identified people, using a random 30-day cookie. Only its hash is stored in D1. Old requests have no visitor identifier and cannot be deduplicated.",
       "Marked personal activity can be filtered from all report aggregates. Privacy opt-outs are never recorded. IP addresses are retained privately and shown only in authenticated user profiles; no fingerprints are created."] });
 }
@@ -248,13 +264,13 @@ export default {
     if ((type.includes("application/pdf") || (response.status === 304 && /\.pdf$/i.test(url.pathname))) && initialPdfRequest(request, response)) {
       const info = metadata(request);
       const visitor = info.bot ? null : visitorIdentity(request);
-      background(ctx, record(request, env, { kind: "pdf_request", path: url.pathname, status: response.status, visitorId: visitor?.value }));
+      const identity = visitor && env.GA_API_SECRET && env.GA_MEASUREMENT_ID ? pdfIdentity(request) : null;
+      background(ctx, record(request, env, { kind: "pdf_request", path: url.pathname, status: response.status, visitorId: visitor?.value })
+        .then(counted => counted && identity ? sendPdfEvent(request, env, identity, info) : undefined));
       if (visitor) {
         const tracked = new Response(response.body, response);
         tracked.headers.append("Set-Cookie", visitor.cookie);
-        if (env.GA_API_SECRET && env.GA_MEASUREMENT_ID) {
-          const identity = pdfIdentity(request);
-          background(ctx, sendPdfEvent(request, env, identity, info));
+        if (identity) {
           tracked.headers.append("Set-Cookie", pdfCookie(identity));
         }
         // Revalidation makes later opens observable without altering PDF bytes or URLs.

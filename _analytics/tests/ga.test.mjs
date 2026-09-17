@@ -12,6 +12,7 @@ const info = { device: "Desktop", browser: "Safari", country: "US", region: "CA"
 function setup(headers = {}, status = 200, fail = false) {
   const pending = [], sent = [];
   const env = { GA_API_SECRET: "test-secret", GA_MEASUREMENT_ID: "G-TEST",
+    DB: { prepare: () => ({ bind: () => ({ run: async () => ({}), all: async () => ({ results: [{ duplicate_of: "" }] }) }) }) },
     ORIGIN: { fetch: async () => new Response(status === 304 ? null : "%PDF", { status, headers: { "Content-Type": "application/pdf", ETag: '"original"' } }) },
     GA_FETCH: async (url, options) => { if (fail) throw new Error("Offline"); sent.push({ url, options }); return new Response(null, { status: 204 }); } };
   const request = new Request(URL, { headers });

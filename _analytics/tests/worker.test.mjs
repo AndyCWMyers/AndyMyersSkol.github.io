@@ -18,6 +18,8 @@ function database() {
   db.exec(readFileSync(new URL("../migrations/0004_county_geography.sql", import.meta.url), "utf8"));
   db.exec(readFileSync(new URL("../migrations/0005_ip_address.sql", import.meta.url), "utf8"));
   db.exec(readFileSync(new URL("../migrations/0006_city.sql", import.meta.url), "utf8"));
+  db.exec(readFileSync(new URL("../migrations/0007_pdf_duplicates.sql", import.meta.url), "utf8"));
+  db.exec(readFileSync(new URL("../migrations/0008_client_metadata.sql", import.meta.url), "utf8"));
   const prepare = (sql) => { assert.ok((sql.match(/UNION ALL/g) || []).length < 5, "D1 compound SELECT limit"); return ({ bind: (...params) => ({
     run: async () => db.prepare(sql).run(...params),
     all: async () => ({ results: db.prepare(sql).all(...params) }),
@@ -67,6 +69,22 @@ test("cities come only from bounded edge metadata, including international city 
   Object.defineProperty(req, "cf", { value: { country: "CA", regionCode: "QC", city: "  Montr\u00e9al\n\u0000 " } });
   await worker.fetch(req, { DB }, ctx); await ctx.finish();
   assert.equal(db.prepare("SELECT city FROM events").get().city, "Montr\u00e9al");
+});
+
+test("OS families come from user agents and bot scores only from valid edge metadata", async () => {
+  for (const [ua, os] of [["iPhone Mac OS X", "iOS"], ["iPad", "iOS"], ["Android Linux", "Android"], ["CrOS Linux", "ChromeOS"], ["Windows NT 10.0", "Windows"], ["Macintosh", "macOS"], ["Linux", "Linux"], ["unknown", ""]]) {
+    assert.equal(agentInfo(ua).os, os);
+  }
+  const { DB, db } = database(), ctx = context();
+  for (const score of [1, 99, undefined, 0, 100, "50", 2.5]) {
+    const req = request("/__analytics/event", { method: "POST", headers: { Origin: ORIGIN, "User-Agent": "iPhone Safari/600" }, body: JSON.stringify({ id: crypto.randomUUID(), kind: "page_view", path: "/", os: "Forged", bot_score: 88 }) });
+    Object.defineProperty(req, "cf", { value: { botManagement: { score } } });
+    await worker.fetch(req, { DB }, ctx);
+  }
+  await ctx.finish();
+  const rows = db.prepare("SELECT os, bot_score FROM events ORDER BY rowid").all();
+  assert.ok(rows.every(row => row.os === "iOS"));
+  assert.deepEqual(rows.map(row => row.bot_score), [1, 99, null, null, null, null, null]);
 });
 
 test("production fetch keeps its native receiver and enables fallback only for public content", async () => {

@@ -21,6 +21,8 @@ function setup() {
   db.exec(readFileSync(new URL("../migrations/0004_county_geography.sql", import.meta.url), "utf8"));
   db.exec(readFileSync(new URL("../migrations/0005_ip_address.sql", import.meta.url), "utf8"));
   db.exec(readFileSync(new URL("../migrations/0006_city.sql", import.meta.url), "utf8"));
+  db.exec(readFileSync(new URL("../migrations/0007_pdf_duplicates.sql", import.meta.url), "utf8"));
+  db.exec(readFileSync(new URL("../migrations/0008_client_metadata.sql", import.meta.url), "utf8"));
   const pending = [], ga = [];
   const prepare = sql => ({ bind: (...params) => ({ run: async () => db.prepare(sql).run(...params), all: async () => ({ results: db.prepare(sql).all(...params) }) }) });
   const env = { DB: { prepare, batch: queries => Promise.all(queries.map(query => query.all())) }, READ_TOKEN: SECRET,
@@ -137,11 +139,101 @@ test("distinct PDF browsers deduplicate repeats across documents without inventi
   s.db.prepare("INSERT INTO events(id,occurred_at,kind,path) VALUES(?,?,?,?)").run(crypto.randomUUID(), now, "pdf_request", "/a.pdf");
   s.db.prepare("INSERT INTO events(id,occurred_at,kind,path,visitor_hash) VALUES(?,?,?,?,?)").run(crypto.randomUUID(), now - 400 * 86400, "pdf_request", "/old.pdf", "old-hash");
   const report = await (await s.request("/__analytics/report", { Authorization: `Bearer ${SECRET}` })).json();
-  assert.deepEqual(report.pdfVisitors, { visitors: 2, identifiedRequests: 4, unidentifiedRequests: 1 });
-  assert.deepEqual(report.pdfVisitorsByPath.find(row => row.name === "/a.pdf"), { name: "/a.pdf", visitors: 2, identifiedRequests: 3, unidentifiedRequests: 1 });
+  assert.deepEqual(report.pdfVisitors, { visitors: 2, identifiedRequests: 3, unidentifiedRequests: 1 });
+  assert.deepEqual(report.pdfVisitorsByPath.find(row => row.name === "/a.pdf"), { name: "/a.pdf", visitors: 2, identifiedRequests: 2, unidentifiedRequests: 1 });
   assert.equal(report.pdfVisitorsByPath.find(row => row.name === "/b.pdf").visitors, 1);
   assert.equal(JSON.stringify(report).includes(await visitorHash(A)), false);
   assert.equal(JSON.stringify(s.db.prepare("SELECT * FROM events").all()).includes(A), false);
+});
+
+test("PDF 200/304 and initial-range retries count once in every report and GA while preserving raw rows", async t => {
+  let now = Date.parse("2026-09-16T18:00:00Z");
+  t.mock.method(Date, "now", () => now);
+  const s = setup(), cookie = `__Host-acw_visitor=${A}; __Host-acw_personal=1`;
+  for (const status of [200, 304, 206]) {
+    s.env.ORIGIN.fetch = async () => new Response(status === 304 ? null : "%PDF", { status, headers: { "Content-Type": "application/pdf" } });
+    const response = await s.request("/paper.pdf", { Cookie: cookie, "CF-Connecting-IP": "203.0.113.5", ...(status === 206 ? { Range: "bytes=0-100" } : {}) });
+    assert.equal(response.status, status);
+    assert.equal(await response.text(), status === 304 ? "" : "%PDF");
+    await s.finish();
+  }
+  const raw = s.db.prepare("SELECT id, duplicate_of FROM events ORDER BY rowid").all();
+  assert.equal(raw.length, 3);
+  assert.deepEqual(raw.map(row => row.duplicate_of), ["", raw[0].id, raw[0].id]);
+  assert.equal(s.ga.length, 1);
+  const query = "/__analytics/report?start=2026-09-16&end=2026-09-16&excludePersonal=0";
+  const get = async suffix => (await s.request(query + suffix, { Authorization: `Bearer ${SECRET}` })).json();
+  const report = await get("");
+  for (const key of ["totals", "daily", "pages", "countries", "devices", "referrers", "cities", "items"]) {
+    assert.equal(report[key].reduce((n, row) => n + row.count, 0), 1, key);
+  }
+  assert.equal(report.pdfVisitors.identifiedRequests, 1);
+  assert.equal(report.personalActivity.events, 1);
+  assert.ok(report.breakdowns.every(row => row.count === 1));
+  assert.equal((await get("&view=users")).rows[0].views, 1);
+  const history = await get(`&view=users&user=${(await visitorHash(A)).slice(0, 24)}`);
+  assert.equal(history.rows.length, 1);
+  assert.equal(history.addresses[0].events, 1);
+  const filtered = await (await s.request(query.replace("excludePersonal=0", "excludePersonal=1"), { Authorization: `Bearer ${SECRET}` })).json();
+  assert.equal(filtered.items.length, 0);
+  now += 4000;
+  await s.request("/paper.pdf", { Cookie: cookie }); await s.finish();
+  assert.equal(s.ga.length, 1);
+  now += 2000;
+  await s.request("/paper.pdf", { Cookie: cookie }); await s.finish();
+  assert.equal(s.ga.length, 2, "retries do not extend the original window; later cached opens count");
+});
+
+test("concurrent PDF retries share one count but different browsers and PDFs remain separate", async t => {
+  t.mock.method(Date, "now", () => Date.parse("2026-09-16T18:00:00Z"));
+  const s = setup(), headers = { Cookie: `__Host-acw_visitor=${A}`, "CF-Connecting-IP": "203.0.113.5" };
+  await Promise.all(Array.from({ length: 10 }, () => s.request("/paper.pdf", headers)));
+  await s.finish();
+  assert.equal(s.ga.length, 1);
+  assert.equal(s.db.prepare("SELECT COUNT(*) AS n FROM events WHERE duplicate_of != ''").get().n, 9);
+  await s.request("/different.pdf", headers);
+  await s.request("/paper.pdf", { ...headers, Cookie: `__Host-acw_visitor=${B}` });
+  await s.request("/paper.pdf", { "CF-Connecting-IP": "203.0.113.5" });
+  await s.request("/paper.pdf", { "CF-Connecting-IP": "203.0.113.5" });
+  await s.finish();
+  assert.equal(s.ga.length, 5, "no fingerprinting or IP-based visitor merging");
+});
+
+test("historical duplicate correction flags only matching same-second 200/304 pairs and deletes nothing", () => {
+  const db = new DatabaseSync(":memory:");
+  db.exec(readFileSync(new URL("../schema.sql", import.meta.url), "utf8"));
+  for (const migration of ["0001_pdf_visitors", "0002_referrer_status", "0003_personal_activity", "0004_county_geography", "0005_ip_address", "0006_city"]) {
+    db.exec(readFileSync(new URL(`../migrations/${migration}.sql`, import.meta.url), "utf8"));
+  }
+  const insert = db.prepare("INSERT INTO events(id,occurred_at,kind,path,visitor_hash,status,ip_address) VALUES(?,?,'pdf_request',?,?,?,?)");
+  insert.run("original", 100, "/paper.pdf", "known", 200, "203.0.113.5");
+  insert.run("retry", 100, "/paper.pdf", "known", 304, "203.0.113.5");
+  insert.run("second-full", 100, "/paper.pdf", "known", 200, "203.0.113.5");
+  insert.run("later", 101, "/paper.pdf", "known", 304, "203.0.113.5");
+  insert.run("other-browser", 100, "/paper.pdf", "other", 304, "203.0.113.5");
+  insert.run("other-path", 100, "/other.pdf", "known", 304, "203.0.113.5");
+  insert.run("other-ip", 100, "/paper.pdf", "known", 304, "203.0.113.6");
+  insert.run("unknown-full", 100, "/paper.pdf", "", 200, "203.0.113.5");
+  insert.run("unknown-retry", 100, "/paper.pdf", "", 304, "203.0.113.5");
+  db.exec(readFileSync(new URL("../migrations/0007_pdf_duplicates.sql", import.meta.url), "utf8"));
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM events").get().n, 9);
+  assert.deepEqual(db.prepare("SELECT id, duplicate_of FROM events WHERE duplicate_of != ''").all().map(row => ({ ...row })), [{ id: "retry", duplicate_of: "original" }]);
+});
+
+test("OS reporting separates matching browsers and latest bot score remains null when unavailable", async () => {
+  const s = setup(), now = Math.floor(Date.now() / 1000), hash = await visitorHash(A);
+  const insert = s.db.prepare("INSERT INTO events(id,occurred_at,kind,path,visitor_hash,browser,device,os,bot_score) VALUES(?,?,'page_view','/',?,'Chrome','Desktop',?,?)");
+  insert.run("mac", now - 1, hash, "macOS", 99);
+  insert.run("windows", now, hash, "Windows", null);
+  const get = async suffix => (await s.request(`/__analytics/report${suffix}`, { Authorization: `Bearer ${SECRET}` })).json();
+  const report = await get("");
+  assert.deepEqual(report.devices.map(row => row.os).sort(), ["Windows", "macOS"]);
+  assert.deepEqual(report.breakdowns.filter(row => row.dimension === "devices").map(row => row.detail).sort(), ["Windows", "macOS"]);
+  const users = await get("?view=users");
+  assert.equal(users.rows[0].os, "Windows");
+  assert.equal(users.rows[0].bot_score, null);
+  const history = await get(`?view=users&user=${hash.slice(0, 24)}`);
+  assert.deepEqual(history.rows.map(row => row.bot_score), [99, null]);
 });
 
 test("headline distinct counts deduplicate across destinations and respect filters for each traffic kind", async () => {

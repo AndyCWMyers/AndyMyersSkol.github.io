@@ -160,7 +160,9 @@ export default {
     if (url.pathname === "/__analytics/client.js") return new Response(`(${startAnalytics.toString()})(${JSON.stringify(env.GA_MEASUREMENT_ID || "")});`, { headers: {
       "Content-Type": "application/javascript", "Cache-Control": "public, max-age=300", "X-Content-Type-Options": "nosniff" } });
     if (url.pathname.startsWith("/__analytics/")) return json({ error: "Not found" }, 404);
-    const response = await (env.ORIGIN || { fetch }).fetch(request);
+    // Public GET/HEAD content can bypass a tracking-code exception. Private APIs cannot.
+    if (request.method === "GET" || request.method === "HEAD") ctx.passThroughOnException?.();
+    const response = env.ORIGIN ? await env.ORIGIN.fetch(request) : await fetch(request);
     if (optedOut(request) || request.method !== "GET") return response;
     const type = response.headers.get("Content-Type") || "";
     if ((type.includes("application/pdf") || (response.status === 304 && /\.pdf$/i.test(url.pathname))) && initialPdfRequest(request, response)) {

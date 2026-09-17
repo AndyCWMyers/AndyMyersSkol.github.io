@@ -21,7 +21,8 @@ changes. The `_analytics` directory is not published by Jekyll.
 7. After the previous nameserver TTL expires, re-enable DNSSEC with Cloudflare's
    new DS record at Squarespace. The migration occurred September 17 at 01:23 UTC;
    the previous NS TTL was 21,600 seconds, so do not publish the new DS before
-   September 17 at 07:23 UTC. DNSSEC restoration is still pending.
+   September 17 at 07:23 UTC. DNSSEC restoration is scheduled for a one-time
+   follow-up at 07:30 UTC (12:30 a.m. Pacific), pending successful completion.
 
 `/__analytics/report` requires a bearer token and returns aggregate reports only.
 The Command Center backend, not its browser bundle, holds this read-only token.
@@ -68,7 +69,9 @@ GA4 historical reports remain in Google Analytics. GA4 Data API import is not se
 ## Limits And Recovery
 
 Free Workers: 100,000 invocations/day; D1 free quotas also apply. An in-code
-analytics failure does not block content, but exhaustion of the Worker account
+analytics failure does not block content; public GET/HEAD requests also use
+Cloudflare's exception pass-through to GitHub Pages. This does not protect against
+every resource failure: exhaustion of the Worker account
 quota can prevent the Worker from running. Remove the two Worker routes to
 bypass analytics and continue serving GitHub Pages through Cloudflare. Switching
 the records to DNS-only also bypasses Cloudflare after DNS caches expire.

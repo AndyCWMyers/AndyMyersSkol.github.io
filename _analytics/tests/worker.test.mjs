@@ -26,6 +26,22 @@ function context() {
 
 function request(path, init) { return new Request(ORIGIN + path, init); }
 
+test("production fetch keeps its native receiver and enables fallback only for public content", async () => {
+  const originalFetch = globalThis.fetch;
+  let fallback = 0;
+  const ctx = { ...context(), passThroughOnException: () => fallback++ };
+  globalThis.fetch = async function () {
+    assert.ok(this === undefined || this === globalThis, "Cloudflare fetch rejects an arbitrary receiver");
+    return new Response("public content");
+  };
+  try {
+    assert.equal(await (await worker.fetch(request("/"), {}, ctx)).text(), "public content");
+    assert.equal(fallback, 1);
+    assert.equal((await worker.fetch(request("/__analytics/report"), {}, ctx)).status, 401);
+    assert.equal(fallback, 1);
+  } finally { globalThis.fetch = originalFetch; }
+});
+
 test("privacy normalization discards credentials, fragments and query strings", () => {
   assert.equal(cleanUrl("https://www.wsj.com/news?email=private@example.com#top"), "https://www.wsj.com/news");
   assert.equal(cleanUrl("https://user:password@example.com"), "");

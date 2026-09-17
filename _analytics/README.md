@@ -21,11 +21,16 @@ changes. The `_analytics` directory is not published by Jekyll.
 5. Set Cloudflare SSL to Full (strict). Preserve all registrar DNS records.
 6. Deploy only after reviewing the routes, then migrate DNS and verify PDFs,
    HTML, byte ranges, redirects, analytics writes, and unauthorized API denial.
-7. After the previous nameserver TTL expires, re-enable DNSSEC with Cloudflare's
-   new DS record at Squarespace. The migration occurred September 17 at 01:23 UTC;
-   the previous NS TTL was 21,600 seconds, so do not publish the new DS before
-   September 17 at 07:23 UTC. DNSSEC restoration is scheduled for a one-time
-   follow-up at 07:30 UTC (12:30 a.m. Pacific), pending successful completion.
+7. DNSSEC was restored September 17, 2026 at 15:47 UTC: Cloudflare signs the zone
+   and Squarespace publishes DS key tag `2371`, algorithm `13`, digest type `2`,
+   digest `E92595BFA98C451C9D35FC6118955FDE057FD0FBB880880A195990F2F521E02A`.
+   The `.com` registry serves the matching DS and Google Public DNS validates
+   website answers. At verification, Stanford resolvers still cached the former
+   DS (key tag `33919`) and could return SERVFAIL until expiry or a resolver-side
+   cache flush. Publishing the new DS cannot evict that old cached record.
+   For future migrations, remove the old DS and wait its full TTL before changing
+   nameservers; waiting only the NS TTL is insufficient. Enable signing on the
+   new authoritative servers and verify their DNSKEY before publishing a new DS.
 
 `/__analytics/report` requires a bearer token. It returns aggregates by default;
 `view=users` returns paginated anonymous browser summaries, and `user=<label>`

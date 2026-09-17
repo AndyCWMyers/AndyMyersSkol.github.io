@@ -2,6 +2,7 @@
 (() => {
   "use strict";
   const path = document.querySelector('meta[name="acw-pdf-path"]').content;
+  const paperTitle = document.querySelector('meta[name="acw-pdf-title"]')?.content;
   const tracking = document.querySelector('meta[name="acw-tracking"]').content === "true";
   const rawURL = path + "?__pdf=raw";
   const diagnosticValue = document.querySelector('meta[name="acw-pdf-diagnostic"]')?.content || "";
@@ -87,6 +88,12 @@
 
   function configure() {
     const app = window.PDFViewerApplication;
+    // Keep catalog titles instead of PDF metadata or the raw-file URL.
+    if (paperTitle) {
+      const setTitle = app.setTitle;
+      app.setTitle = function () { return setTitle.call(this, paperTitle); };
+      app.setTitle();
+    }
     const open = app.open;
     app.open = function (args) {
       // Mark internal byte/range fetches even when Fetch Metadata is unavailable.

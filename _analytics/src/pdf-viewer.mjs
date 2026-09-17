@@ -1,4 +1,5 @@
 import viewerHTML from "./pdf-viewer-template.mjs";
+import documents from "./documents.mjs";
 
 export function isPdfNavigation(request) {
   return pdfNavigationReason(request) === "viewer";
@@ -40,16 +41,18 @@ function validPath(path) {
 export function pdfViewerResponse(path, measurementId, trackingEnabled = true, diagnosticId = "") {
   if (!validPath(path)) throw new TypeError("Expected a canonical, same-origin PDF pathname");
   if (diagnosticId && !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(diagnosticId)) throw new TypeError("Invalid diagnostic ID");
+  const title = documents.find(document => document.name === path)?.title || decodeURIComponent(path.split("/").pop());
   const rawLink = `<a href="${escapeAttribute(path + "?__pdf=raw")}">Open original PDF</a>`;
   const head = `<base href="/__pdfjs/web/" />
     <meta name="acw-pdf-path" content="${escapeAttribute(path)}" />
+    <meta name="acw-pdf-title" content="${escapeAttribute(title)}" />
     <meta name="acw-tracking" content="${trackingEnabled ? "true" : "false"}" />
     <meta name="acw-pdf-diagnostic" content="${trackingEnabled ? diagnosticId : ""}" />
     ${trackingEnabled ? '<script src="/__analytics/engagement.js"></script>' : ""}
     <script src="acw-viewer.js"></script>`;
   const html = viewerHTML
     .replace("<head>", "<head>\n" + head)
-    .replace("<title>PDF.js viewer</title>", `<title>${escapeAttribute(decodeURIComponent(path.split("/").pop()))}</title>`)
+    .replace("<title>PDF.js viewer</title>", `<title>${escapeAttribute(title)}</title>`)
     .replace('<body tabindex="0">', `<body tabindex="0">
     <noscript><p class="acwPdfFallback">${rawLink}</p></noscript>
     <p id="acwPdfError" class="acwPdfFallback" role="alert" hidden>PDF preview unavailable. ${rawLink}</p>`)

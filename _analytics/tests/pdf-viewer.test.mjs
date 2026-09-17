@@ -4,6 +4,7 @@ import { readFile, readdir, access } from "node:fs/promises";
 import vm from "node:vm";
 import { pdfViewerResponse, isPdfNavigation } from "../src/pdf-viewer.mjs";
 import template from "../src/pdf-viewer-template.mjs";
+import documents from "../src/documents.mjs";
 
 const asset = name => new URL("../viewer-assets/" + name, import.meta.url);
 
@@ -15,15 +16,16 @@ class Target {
 
 async function settle() { for (let i = 0; i < 12; i++) await Promise.resolve(); }
 
-async function bootstrap({ tracking = true, privacy = {}, cookie = "", visible = true, diagnosticId = "" } = {}) {
+async function bootstrap({ tracking = true, privacy = {}, cookie = "", visible = true, diagnosticId = "", paperTitle = "Paper Title" } = {}) {
   const script = await readFile(asset("web/acw-viewer.js"), "utf8");
   const document = new Target(), window = new Target(), bus = new Target();
   const requests = [], diagnostics = [], starts = [], opens = [], options = {}, timers = new Map(), errorMessage = { hidden: true };
   let resolveStart, downloads = 0;
   Object.assign(document, { visibilityState: visible ? "visible" : "hidden", cookie,
-    referrer: "https://ref.example/sensitive?email=hidden", querySelector: name => name === "#acwPdfError" ? errorMessage : ({ content: name.includes("acw-pdf-diagnostic") ? diagnosticId : name.includes("acw-pdf-path") ? "/paper.pdf" : String(tracking) }) });
+    referrer: "https://ref.example/sensitive?email=hidden", querySelector: name => name === "#acwPdfError" ? errorMessage : ({ content: name.includes("acw-pdf-title") ? paperTitle : name.includes("acw-pdf-diagnostic") ? diagnosticId : name.includes("acw-pdf-path") ? "/paper.pdf" : String(tracking) }) });
   bus.on = bus.addEventListener;
   window.PDFViewerApplication = { initializedPromise: Promise.resolve(), eventBus: bus, pdfDocument: {}, toolbar: {}, secondaryToolbar: {},
+    setTitle(title) { assert.equal(this, window.PDFViewerApplication); this._title = title; document.title = title; },
     open(args) { assert.equal(this, window.PDFViewerApplication); opens.push(args); return "opened"; } };
   window.PDFViewerApplicationOptions = { setAll: values => Object.assign(options, values) };
   window.acwStartEngagement = values => { starts.push(values); return { download: () => downloads++, stop() {} }; };
@@ -100,6 +102,21 @@ test("viewer marks only its own raw fetch and preserves PDF.js options and recei
   const other = { url: "/other.pdf" };
   app.open(other);
   assert.equal(h.opens[1], other);
+});
+
+test("viewer tab titles use catalog titles and cannot be overwritten by PDF metadata", async () => {
+  for (const document of documents.filter(row => row.name.endsWith(".pdf"))) {
+    const html = await pdfViewerResponse(document.name, "").text();
+    assert(html.includes(`<title>${document.title}</title>`));
+    assert(html.includes(`name="acw-pdf-title" content="${document.title}"`));
+  }
+  for (const tracking of [true, false]) {
+    const h = await bootstrap({ paperTitle: 'A Paper: Evidence & "Results"', tracking });
+    assert.equal(h.document.title, 'A Paper: Evidence & "Results"');
+    h.window.PDFViewerApplication.setTitle("strange embedded metadata - paper.pdf?__pdf=raw");
+    assert.equal(h.document.title, 'A Paper: Evidence & "Results"');
+    assert.equal(h.window.PDFViewerApplication._title, h.document.title);
+  }
 });
 
 test("renderer adapts real generic markup, same URL/raw loading, escaping, CSP and no GA", async () => {

@@ -119,6 +119,15 @@ test("viewer tab titles use catalog titles and cannot be overwritten by PDF meta
   }
 });
 
+test("viewer starts with the sidebar closed independently of tracking", async () => {
+  for (const tracking of [true, false]) {
+    const h = await bootstrap({ tracking });
+    assert.equal(h.options.sidebarViewOnLoad, 0);
+    assert.equal(h.options.disablePreferences, true);
+    assert.equal(h.options.viewOnLoad, 1);
+  }
+});
+
 test("renderer adapts real generic markup, same URL/raw loading, escaping, CSP and no GA", async () => {
   const response = pdfViewerResponse("/papers/a%22%3Cscript%3E.pdf", "G-UNUSED");
   const html = await response.text();

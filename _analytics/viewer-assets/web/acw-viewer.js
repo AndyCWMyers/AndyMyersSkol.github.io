@@ -106,7 +106,7 @@
       enableSignatureEditor: false, enableAltText: false, enableAltTextModelDownload: false,
       enableGuessAltText: false, enableHighlightFloatingButton: false,
       enableMerge: false, enableSplitMerge: false, enableNova: false,
-      viewerCssTheme: 1, viewOnLoad: 1, historyUpdateUrl: false,
+      viewerCssTheme: 1, viewOnLoad: 1, sidebarViewOnLoad: 0, historyUpdateUrl: false,
       workerSrc: "/__pdfjs/build/pdf.worker.mjs", cMapUrl: "/__pdfjs/web/cmaps/",
       standardFontDataUrl: "/__pdfjs/web/standard_fonts/", wasmUrl: "/__pdfjs/web/wasm/",
       iccUrl: "/__pdfjs/web/iccs/", imageResourcesPath: "/__pdfjs/web/images/",

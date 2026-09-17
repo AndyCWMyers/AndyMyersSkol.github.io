@@ -122,6 +122,8 @@ test("homepage time stays separate, tracked zero differs from historical not mea
   const stats = (await userReading(DB, dates("2026-09-17"), false, [visitor.slice(0,24)])).rows[0];
   assert.equal(stats.readingSeconds, 0);
   assert.equal(stats.homepageSeconds, 300);
+  assert.equal(stats.measuredPdfViews, 0);
+  assert.equal(stats.measuredHomepageViews, 1);
   assert.equal(stats.lastReadingPath, "/");
   assert.equal(await saveReading(DB, snapshot(id, { seq: 2 }), visitor, now), 400);
   const old = crypto.randomUUID();

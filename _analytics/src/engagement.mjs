@@ -90,6 +90,8 @@ export async function userReading(db, dates, excludePersonal, labels) {
       SUM(CASE WHEN s.kind = 'pdf_request' THEN COALESCE(h.milliseconds,0) ELSE 0 END) / 1000.0 AS readingSeconds,
       SUM(CASE WHEN s.kind = 'page_view' THEN COALESCE(h.milliseconds,0) ELSE 0 END) / 1000.0 AS homepageSeconds,
       SUM(COALESCE(h.downloads,0)) AS downloads, COUNT(DISTINCT CASE WHEN h.session_id IS NOT NULL THEN s.id END) AS measuredViews,
+      COUNT(DISTINCT CASE WHEN h.session_id IS NOT NULL AND s.kind = 'pdf_request' THEN s.id END) AS measuredPdfViews,
+      COUNT(DISTINCT CASE WHEN h.session_id IS NOT NULL AND s.kind = 'page_view' THEN s.id END) AS measuredHomepageViews,
       MAX(CASE WHEN s.active = 1 AND s.last_seen >= ? AND s.last_seen < ? THEN s.last_seen ELSE 0 END) AS liveAt,
       MAX(CASE WHEN s.recent = 1 THEN s.last_seen END) AS lastReadingAt,
       MAX(CASE WHEN s.recent = 1 THEN s.path END) AS lastReadingPath

@@ -222,7 +222,7 @@ export default {
       if (visitor) {
         const tracked = new Response(response.body, response);
         tracked.headers.append("Set-Cookie", visitor.cookie);
-        if (!personalBrowser(request) && env.GA_API_SECRET && env.GA_MEASUREMENT_ID) {
+        if (env.GA_API_SECRET && env.GA_MEASUREMENT_ID) {
           const identity = pdfIdentity(request);
           background(ctx, sendPdfEvent(request, env, identity, info));
           tracked.headers.append("Set-Cookie", pdfCookie(identity));

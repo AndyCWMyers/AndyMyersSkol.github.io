@@ -37,6 +37,7 @@ test("GA payload reports coarse location/device but no IP, arbitrary query, or i
   assert.equal(payload.device.language, "en-US");
   assert.equal(payload.events[0].params.page_location, "https://www.andrewcwmyers.com/paper.pdf");
   assert.equal(payload.events[0].params.page_referrer, "https://example.org");
+  assert.equal(payload.events[0].params.personal_activity, "no");
   assert.equal(payload.events[0].params.engagement_time_msec, undefined);
   assert.equal(payload.ip_override, undefined);
   assert.equal(payload.consent.ad_personalization, "DENIED");
@@ -73,11 +74,13 @@ test("conditional PDF opens are observed; GA failure does not break delivery", a
   }
 });
 
-test("browser obtains GA identifiers through the Google tag getter without overwriting GA cookies", () => {
-  const document = { visibilityState: "visible", addEventListener() {}, removeEventListener() {}, cookie: "" };
-  const dataLayer = [];
-  dataLayer.push = args => { assert.equal(args[0], "get"); args[3](args[2] === "client_id" ? "123.456" : 789); };
-  vm.runInNewContext(`(${startAnalytics.toString()})("G-TEST");`, { window: { dataLayer }, document, navigator: { sendBeacon: () => true },
-    location: new globalThis.URL("https://www.andrewcwmyers.com/"), URL: globalThis.URL, Blob, crypto });
-  assert.match(document.cookie, /^__Host-acw_ga=123\.456\|789\|\d+; Path=\/; Secure; SameSite=Lax; Max-Age=1800$/);
+test("browser obtains GA identifiers for regular and personal activity without overwriting GA cookies", () => {
+  for (const cookie of ["", "__Host-acw_personal=1"]) {
+    const document = { visibilityState: "visible", addEventListener() {}, removeEventListener() {}, cookie };
+    const dataLayer = [];
+    dataLayer.push = args => { assert.equal(args[0], "get"); args[3](args[2] === "client_id" ? "123.456" : 789); };
+    vm.runInNewContext(`(${startAnalytics.toString()})("G-TEST");`, { window: { dataLayer }, document, navigator: { sendBeacon: () => true },
+      location: new globalThis.URL("https://www.andrewcwmyers.com/"), URL: globalThis.URL, Blob, crypto });
+    assert.match(document.cookie, /^__Host-acw_ga=123\.456\|789\|\d+; Path=\/; Secure; SameSite=Lax; Max-Age=1800$/);
+  }
 });

@@ -1,4 +1,6 @@
 // GA credentials stay in the Worker. Native PDFs cannot report engagement time.
+import { personalBrowser } from "./preferences.mjs";
+
 const SESSION_SECONDS = 1800;
 
 export function pdfIdentity(request, now = Math.floor(Date.now() / 1000)) {
@@ -27,7 +29,7 @@ export function pdfPayload(request, identity, info) {
   const os = /Android/.test(ua) ? "Android" : /iPhone|iPad/.test(ua) ? "iOS" : /Windows/.test(ua) ? "Windows"
     : /Macintosh|Mac OS X/.test(ua) ? "MacOS" : /Linux/.test(ua) ? "Linux" : "";
   const params = { page_location: `${url.origin}${url.pathname}`, page_title: `PDF: ${url.pathname.split("/").pop()}`.slice(0, 100),
-    content_type: "pdf", session_id: identity.session };
+    content_type: "pdf", session_id: identity.session, personal_activity: personalBrowser(request) ? "yes" : "no" };
   if (info.referrer) params.page_referrer = `https://${info.referrer}`;
   if (info.source) params.campaign_source = info.source;
   if (info.medium) params.campaign_medium = info.medium;

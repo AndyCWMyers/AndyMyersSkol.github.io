@@ -68,7 +68,7 @@ export async function preferences(request, env = {}) {
     }
     headers.append("Set-Cookie", `${EXCLUSION_COOKIE}=${exclude ? "1" : ""}; Path=/; Secure; SameSite=Lax; Max-Age=${exclude ? 31536000 : 0}`);
     headers.append("Set-Cookie", `${PERSONAL_COOKIE}=${personal ? "1" : ""}; Path=/; Secure; SameSite=Lax; Max-Age=${personal ? 31536000 : 0}`);
-    if (exclude || personal) for (const name of [...(exclude ? [VISITOR_COOKIE] : []), "__Host-acw_ga", "__Host-acw_pdf"]) {
+    if (exclude) for (const name of [VISITOR_COOKIE, "__Host-acw_ga", "__Host-acw_pdf"]) {
       headers.append("Set-Cookie", `${name}=; Path=/; Secure; SameSite=Lax; Max-Age=0`);
     }
     return new Response(null, { status: 303, headers });
@@ -87,7 +87,7 @@ body{margin:0;padding:48px 24px;color:#273437;background:#fafbfb;font:16px/1.6 s
 <form method="post" action="/__analytics/preferences">
 <label><input type="radio" name="mode" value="included" ${!excluded && !personal ? "checked" : ""}>Regular visitor</label>
 <label><input type="radio" name="mode" value="personal" ${personal && !excluded ? "checked" : ""}>Mark as my activity</label>
-<small>Personal activity is retained in the private dashboard, where you can hide or show it. It is not sent to Google Analytics.</small>
+<small>Personal activity is retained in the private dashboard and Google Analytics with a personal-activity label, so it can be included or excluded in reports without discarding it.</small>
 <label><input type="radio" name="mode" value="excluded" ${excluded ? "checked" : ""}>Do not record this browser</label>
 <button type="submit">Save preference</button></form>
 <small>These preferences apply to page views, PDF requests and link clicks. Mark each browser/profile separately and reload open website tabs after saving. Clearing cookies resets the preference. Older visits without an identifiable browser cannot be classified as yours. Privacy opt-out signals always stop collection.</small>

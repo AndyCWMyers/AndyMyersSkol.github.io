@@ -36,7 +36,7 @@ export default String.raw`function startAnalytics(measurementId) {
   }
 
   function rememberGoogleSession() {
-    if ((document.cookie || "").split(";").some(part => part.trim() === "__Host-acw_ignore=1" || part.trim() === "__Host-acw_personal=1")) return;
+    if ((document.cookie || "").split(";").some(part => part.trim() === "__Host-acw_ignore=1")) return;
     if (!measurementId || !Array.isArray(window.dataLayer)) return;
     const tag = function () { window.dataLayer.push(arguments); };
     tag("get", measurementId, "client_id", client => {

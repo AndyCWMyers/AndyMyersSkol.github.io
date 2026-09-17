@@ -21,7 +21,7 @@ function setup() {
   const pending = [], ga = [];
   const prepare = sql => ({ bind: (...params) => ({ run: async () => db.prepare(sql).run(...params), all: async () => ({ results: db.prepare(sql).all(...params) }) }) });
   const env = { DB: { prepare, batch: queries => Promise.all(queries.map(query => query.all())) }, READ_TOKEN: SECRET,
-    GA_MEASUREMENT_ID: "G-TEST", GA_API_SECRET: "test-only", GA_FETCH: async () => { ga.push(1); return new Response(null, { status: 204 }); },
+    GA_MEASUREMENT_ID: "G-TEST", GA_API_SECRET: "test-only", GA_FETCH: async (_url, options) => { ga.push(JSON.parse(options.body)); return new Response(null, { status: 204 }); },
     ORIGIN: { fetch: async () => new Response("%PDF", { headers: { "Content-Type": "application/pdf" } }) } };
   const ctx = { waitUntil: promise => pending.push(promise) };
   return { db, env, ctx, ga, finish: () => Promise.all(pending),
@@ -105,14 +105,30 @@ test("additive migration preserves existing requests with explicitly unknown vis
   assert.equal(db.prepare("SELECT visitor_hash FROM events WHERE id='old'").get().visitor_hash, "");
 });
 
-test("homepage excludes this browser before Google Tag Manager loads", () => {
+test("homepage honors collection opt-outs before Google Tag Manager loads", () => {
   const html = readFileSync(new URL("../../index.html", import.meta.url), "utf8");
   const tag = html.match(/<!-- Google Tag Manager -->\s*<script>([\s\S]*?)<\/script>/)[1];
-  for (const cookie of ["__Host-acw_ignore=1", "__Host-acw_personal=1"]) {
+  for (const [cookie, navigator] of [["__Host-acw_ignore=1", {}], ["__Host-acw_personal=1; __Host-acw_ignore=1", {}], ["", { doNotTrack: "1" }], ["__Host-acw_personal=1", { globalPrivacyControl: true }]]) {
     const window = {};
-    vm.runInNewContext(tag, { window, document: { cookie }, navigator: {} });
+    vm.runInNewContext(tag, { window, document: { cookie }, navigator });
     assert.equal(window["ga-disable-G-82ZD3DWY3B"], true);
     assert.equal(window.dataLayer, undefined);
+  }
+});
+
+test("homepage labels personal and regular traffic before loading GTM without extra page views", () => {
+  const html = readFileSync(new URL("../../index.html", import.meta.url), "utf8");
+  const tag = html.match(/<!-- Google Tag Manager -->\s*<script>([\s\S]*?)<\/script>/)[1];
+  for (const [cookie, expected] of [["__Host-acw_personal=1", "yes"], ["", "no"], ["__Host-acw_personal=10", "no"]]) {
+    const window = {}, scripts = [];
+    const document = { cookie, createElement: () => ({}), getElementsByTagName: () => [{ parentNode: { insertBefore: script => scripts.push(script) } }] };
+    vm.runInNewContext(tag, { window, document, navigator: {} });
+    assert.equal(window["ga-disable-G-82ZD3DWY3B"], undefined);
+    assert.equal(window.dataLayer.length, 2);
+    assert.equal(window.dataLayer[0][0], "set");
+    assert.equal(window.dataLayer[0][1].personal_activity, expected);
+    assert.equal(window.dataLayer[1].event, "gtm.js");
+    assert.equal(scripts[0].src, "https://www.googletagmanager.com/gtm.js?id=GTM-MSMBKM2K");
   }
 });
 
@@ -196,7 +212,7 @@ test("document labels match actual website titles and case-correct local assets"
   }
 });
 
-test("personal activity is retained, never forwarded to GA, and filtered across every aggregate", async () => {
+test("personal activity is retained, labeled in GA, and filtered across every dashboard aggregate", async () => {
   const s = setup();
   const owner = `__Host-acw_personal=1; __Host-acw_visitor=${A}`;
   const other = `__Host-acw_visitor=${B}`;
@@ -207,7 +223,7 @@ test("personal activity is retained, never forwarded to GA, and filtered across 
     }
   }
   await s.finish();
-  assert.equal(s.ga.length, 1);
+  assert.deepEqual(s.ga.map(payload => payload.events[0].params.personal_activity), ["yes", "no"]);
   assert.equal(s.db.prepare("SELECT COUNT(*) AS n FROM events WHERE is_personal=1").get().n, 4);
   const report = async filter => (await s.request(`/__analytics/report?excludePersonal=${filter}`, { Authorization: `Bearer ${SECRET}` })).json();
   const all = await report(0), filtered = await report(1);
@@ -234,6 +250,8 @@ test("marking a browser matches only its existing identity and unmarking rotates
   assert.equal(marked.status, 303);
   assert.match(marked.headers.get("Set-Cookie"), /__Host-acw_personal=1/);
   assert.match(marked.headers.get("Set-Cookie"), /__Host-acw_ignore=;.*Max-Age=0/);
+  assert.equal(marked.headers.get("Set-Cookie").includes("__Host-acw_ga="), false);
+  assert.equal(marked.headers.get("Set-Cookie").includes("__Host-acw_pdf="), false);
   assert.equal(s.db.prepare("SELECT visitor_hash FROM personal_visitors").get().visitor_hash, await visitorHash(A));
   const filtered = await (await s.request("/__analytics/report", { Authorization: `Bearer ${SECRET}` })).json();
   assert.deepEqual(filtered.items.map(row => row.name).sort(), ["/anonymous.pdf", "/other.pdf"]);

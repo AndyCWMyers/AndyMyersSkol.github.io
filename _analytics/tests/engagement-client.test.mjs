@@ -15,7 +15,7 @@ class Target {
 
 async function settle() { for (let i = 0; i < 12; i++) await Promise.resolve(); }
 
-function browser({ start = Date.UTC(2026, 8, 17, 6, 59, 59), cookie = "", privacy = {}, fetcher } = {}) {
+function browser({ start = Date.UTC(2026, 8, 17, 6, 59, 59), cookie = "", privacy = {}, fetcher, kind = "pdf_view" } = {}) {
   let mono = 0, wall = start, serial = 0, focused = true;
   const tasks = new Map(), requests = [], warnings = [];
   const window = new Target(), document = new Target();
@@ -36,7 +36,7 @@ function browser({ start = Date.UTC(2026, 8, 17, 6, 59, 59), cookie = "", privac
     },
   });
   vm.runInContext(source, context);
-  const handle = window.acwStartEngagement({ id: "view-1", path: "/paper.pdf", kind: "pdf_view" });
+  const handle = window.acwStartEngagement({ id: "view-1", path: kind === "page_view" ? "/" : "/paper.pdf", kind });
   return { window, document, navigator, requests, handle, warnings, tasks,
     get wall() { return wall; },
     async tick(ms = 1000, wallMs = ms) {
@@ -79,18 +79,46 @@ test("startup sends immediate active snapshot with current zero hour; no cookie/
   checkTotals(latest(h));
 });
 
-test("five-minute checkpoints have no inactivity cutoff; blur/hide pause and BFCache keeps id", async () => {
+test("homepage and PDF save at 15/30/45/60 active seconds, then five-minute intervals", async () => {
+  for (const kind of ["pdf_view", "page_view"]) {
+    const h = browser({ kind });
+    for (let i = 0; i < 660; i++) await h.tick();
+    assert.deepEqual(h.requests.map(row => row.body.milliseconds), [0, 15000, 30000, 45000, 60000, 360000, 660000]);
+    assert.deepEqual(h.requests.map(row => row.body.seq), [1, 2, 3, 4, 5, 6, 7]);
+    for (const row of h.requests) checkTotals(row.body);
+  }
+});
+
+test("early milestones survive downloads and hidden time does not advance them", async () => {
   const h = browser();
-  for (let i = 0; i < 300; i++) await h.tick();
-  assert.equal(latest(h).milliseconds, 300000);
-  assert.equal(h.requests.length, 2);
+  for (let i = 0; i < 10; i++) await h.tick();
+  h.handle.download();
+  await h.visible(false);
+  for (let i = 0; i < 120; i++) await h.tick();
+  assert.equal(latest(h).milliseconds, 10000);
+  const hiddenCount = h.requests.length;
+  await h.visible(true);
+  for (let i = 0; i < 4; i++) await h.tick();
+  assert.equal(h.requests.length, hiddenCount + 1);
+  await h.tick();
+  assert.equal(latest(h).milliseconds, 15000);
+  assert.equal(latest(h).downloads, 1);
+  for (let i = 0; i < 45; i++) await h.tick();
+  assert.deepEqual(h.requests.slice(hiddenCount + 1).map(row => row.body.milliseconds), [15000, 30000, 45000, 60000]);
+});
+
+test("checkpoints have no inactivity cutoff; blur/hide pause and BFCache keeps id", async () => {
+  const h = browser();
+  for (let i = 0; i < 360; i++) await h.tick();
+  assert.equal(latest(h).milliseconds, 360000);
+  assert.equal(h.requests.length, 6);
   await h.focus(false);
   assert.equal(latest(h).active, false);
   for (let i = 0; i < 10; i++) await h.tick();
   await h.focus(true);
   await h.tick();
   await h.visible(false);
-  assert.equal(latest(h).milliseconds, 301000);
+  assert.equal(latest(h).milliseconds, 361000);
   await h.tick(600000);
   await h.visible(true);
   h.window.emit("pagehide", { persisted: true });
@@ -98,7 +126,7 @@ test("five-minute checkpoints have no inactivity cutoff; blur/hide pause and BFC
   h.window.emit("pageshow", { persisted: true });
   await h.tick();
   h.handle.download();
-  assert.equal(latest(h).milliseconds, 302000);
+  assert.equal(latest(h).milliseconds, 362000);
   assert.equal(latest(h).downloads, 1);
   assert(h.requests.every(r => r.body.id === "view-1"));
   h.handle.stop();

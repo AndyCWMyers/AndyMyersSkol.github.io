@@ -70,8 +70,9 @@ are split at that boundary; each hour is capped at 3,600,000 ms. Clock changes
 can undercount, intentionally. These are unverified client telemetry.
 
 An initial zero-counter snapshot includes the current UTC hour immediately on
-helper startup, with the current active state. Checkpoints occur every five
-additional engaged minutes. Blur, hide, pagehide,
+helper startup, with the current active state. Checkpoints occur at 15, 30, 45
+and 60 engaged seconds, then every five additional engaged minutes. Early
+milestones are not postponed by intervening saves. Blur, hide, pagehide,
 download, explicit stop, and resume also send cumulative state. `active` is the
 state after that transition, not a claim about an unsampled future interval.
 Fetch uses keepalive; a failed request retries at most twice, with the identical

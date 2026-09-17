@@ -61,8 +61,11 @@ Migration `0011_reading_sessions.sql` adds session state and UTC-hour cumulative
 reading buckets, linked to existing view IDs. It does not change historical rows.
 The shared homepage/PDF tracker counts time only while visible and focused, with
 no inactivity cutoff. Suspended timers and clock jumps are discarded. It sends
-an initial state, then every five engaged minutes, plus pause, resume, exit and
-download actions. Browser termination delivery is best effort; an abrupt close
+an initial state, then at 15, 30, 45 and 60 engaged seconds, followed by five
+additional engaged minutes between saves, plus pause, resume, exit and download
+actions. Pause/download saves do not postpone first-minute milestones. Hidden or
+unfocused time does not advance the schedule. Browser termination delivery is
+best effort; an abrupt close
 can lose the unsent interval. Multiple foreground windows may overlap.
 
 Each save updates one session and only hourly buckets whose counters increased.

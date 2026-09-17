@@ -3,6 +3,8 @@ export default String.raw`(() => {
   "use strict";
   const HOUR = 3600000;
   const CHECKPOINT = 300000;
+  const EARLY_CHECKPOINT = 15000;
+  const EARLY_WINDOW = 60000;
   const MAX_GAP = 5000;
   const MAX_HOURS = 128;
   const noop = { download() {}, stop() {} };
@@ -30,7 +32,7 @@ export default String.raw`(() => {
 
   function startEngagement({ id, path, kind }) {
     if (!allowed() || !id || !path || !kind) return noop;
-    let milliseconds = 0, downloads = 0, seq = 0, checkpoint = 0;
+    let milliseconds = 0, downloads = 0, seq = 0, nextCheckpoint = EARLY_CHECKPOINT;
     let lastMono = performance.now(), lastWall = Date.now();
     let focused = document.hasFocus(), inPage = true, stopped = false, cancelled = false;
     let wasActive = focused && document.visibilityState === "visible";
@@ -77,7 +79,10 @@ export default String.raw`(() => {
 
     function save(isActive = active()) {
       if (!allowed()) return;
-      checkpoint = milliseconds;
+      // Early saves follow active-time milestones even after a pause or download.
+      nextCheckpoint = milliseconds < EARLY_WINDOW
+        ? (Math.floor(milliseconds / EARLY_CHECKPOINT) + 1) * EARLY_CHECKPOINT
+        : milliseconds + CHECKPOINT;
       const body = JSON.stringify({ id, seq: ++seq, active: isActive,
         milliseconds, downloads, at: Date.now(),
         hours: Array.from(hours.values(), item => ({ ...item })).sort((a, b) => a.hour - b.hour) });
@@ -129,7 +134,7 @@ export default String.raw`(() => {
       sample();
       focused = document.hasFocus();
       wasActive = active();
-      if (!stopped && active() && milliseconds - checkpoint >= CHECKPOINT) save();
+      if (!stopped && active() && milliseconds >= nextCheckpoint) save();
     }
 
     function download(at = Date.now()) {

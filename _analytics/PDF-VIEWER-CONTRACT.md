@@ -87,13 +87,21 @@ share existing saves and are forbidden for PDF sessions. Old payloads remain
 valid without them; absent historical values mean unknown. The ingestion body
 limit is 64,512 bytes. Attention fields are cumulative and cannot decrease.
 
+PDF-only hour buckets may include `pdfAttention` with `total` (1-10,000 pages),
+`scrolled` (0/1), and `pages` (ceil(total/32) unsigned 32-bit words). Bit zero
+of word zero denotes page 1. Unused final bits must be zero; set bits may never
+be cleared. `pdf-attention.mjs` validates and unions these snapshots. Missing
+metadata remains unknown, never an empty measured set. Page visibility is sampled
+inside the PDF viewer while focused; pre-rendering does not count as a view.
+These sessions rotate at their 17th distinct UTC-hour bucket to bound payloads.
+
 At a 129th distinct UTC hour, the helper sends the complete old session with
 `active:false`, then starts a new view with a fresh ID (`engagement:true`) and
 waits for OK before starting its next tracker. New-view kind is preserved; this
-is the sole automatic session/view rotation. A failed rotation stops tracking
+is the only automatic session/view rotation mechanism. A failed rotation stops tracking
 and logs a warning rather than truncating old buckets. The original returned
 handle delegates to the successor. Rotation uses empty campaign fields and an
-origin-only referrer. 128 buckets fit within the 16,384-byte body limit.
+origin-only referrer. The applicable bucket caps keep bodies below 64,512 bytes.
 
 Both modules honor DNT, GPC, and `__Host-acw_ignore=1` (also checked during
 tracking/retries). The personal cookie does not suppress recording. With

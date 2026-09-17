@@ -1,5 +1,6 @@
 // Served verbatim as /__analytics/engagement.js; no bundler/runtime dependencies.
 import homepageAttentionSource from "./homepage-attention-client.mjs";
+import pdfAttentionSource from "./pdf-attention-client.mjs";
 export default String.raw`(() => {
   "use strict";
   const HOUR = 3600000;
@@ -11,6 +12,7 @@ export default String.raw`(() => {
   const noop = { download() {}, stop() {} };
 
   ${homepageAttentionSource}
+  ${pdfAttentionSource}
 
   function allowed() {
     return !navigator.globalPrivacyControl && navigator.doNotTrack !== "1" &&
@@ -45,7 +47,8 @@ export default String.raw`(() => {
     const listeners = [];
     let timer;
     const attention = kind === "page_view" && ["/", "/index", "/index.html"].includes(path)
-      ? homepageAttention({ bucket, active, allowed }) : null;
+      ? homepageAttention({ bucket, active, allowed })
+      : ["pdf", "pdf_view"].includes(kind) ? pdfAttention({ bucket, active, allowed }) : null;
 
     function active() {
       return !stopped && inPage && focused && document.visibilityState === "visible";
@@ -54,7 +57,7 @@ export default String.raw`(() => {
     function bucket(wall) {
       const hour = Math.floor(wall / HOUR) * 3600;
       if (!hours.has(hour)) {
-        if (hours.size >= MAX_HOURS) return null;
+        if (hours.size >= (attention?.maxHours || MAX_HOURS)) return null;
         hours.set(hour, { hour, milliseconds: 0, downloads: 0 });
       }
       return hours.get(hour);

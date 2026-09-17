@@ -6,6 +6,7 @@ import worker, { reportDates } from "../src/worker.mjs";
 import { startReading, saveReading, validReading, readingItems, userReading, historyReading } from "../src/engagement.mjs";
 import { visitorHash } from "../src/preferences.mjs";
 import { HOMEPAGE_ITEMS, validAttention, summarizeAttention } from "../src/homepage-attention.mjs";
+import { validPdfAttention, summarizePdfAttention } from "../src/pdf-attention.mjs";
 
 const ORIGIN = "https://www.andrewcwmyers.com";
 const PDF = "/andrew_c_w_myers_CV.pdf";
@@ -50,6 +51,53 @@ function snapshot(id, changes = {}) {
 }
 
 function dates(day) { return reportDates(new URL(`${ORIGIN}?start=${day}&end=${day}`)); }
+
+test("PDF attention is private, date-scoped, cumulative, idempotent and reuses existing hourly writes", async () => {
+  const { db, DB } = database();
+  const id = await session(db, DB);
+  const before = { total: 40, scrolled: 1, pages: [2147483649, 0] };
+  const after = { total: 40, scrolled: 0, pages: [0, 128] };
+  const body = snapshot(id);
+  body.hours[0].pdfAttention = before; body.hours[1].pdfAttention = after;
+  assert.equal(await saveReading(DB, body, visitor, now), 204);
+  const saved = db.prepare("SELECT * FROM reading_hours ORDER BY hour").all();
+  for (const pdfAttention of [undefined, { ...after, pages: [0, 0] }, { ...after, total: 39, pages: [0, 64] }]) {
+    await saveReading(DB, { ...body, seq: 2, hours: [body.hours[0], { ...body.hours[1], pdfAttention }] }, visitor, now);
+    assert.equal(db.prepare("SELECT seq FROM reading_sessions WHERE id = ?").get(id).seq, 1);
+  }
+  await saveReading(DB, body, visitor, now);
+  assert.deepEqual(db.prepare("SELECT * FROM reading_hours ORDER BY hour").all(), saved);
+  const count = db.prepare("SELECT total_changes() AS n").get().n;
+  await saveReading(DB, { ...body, seq: 2, milliseconds: 301000, hours: [body.hours[0], { ...body.hours[1], milliseconds: 181000, pdfAttention: { ...after, scrolled: 1, pages: [2, 128] } }] }, visitor, now);
+  assert.equal(db.prepare("SELECT total_changes() AS n").get().n - count, 2);
+  const rows = await historyReading(DB, dates("2026-09-16"), true, [id]);
+  assert.deepEqual(rows.rows[0].pdfAttention, { totalPages: 40, scrolled: true, pages: [1, 32], furthestPage: 32 });
+  const result = await report(DB, `view=users&user=${visitor.slice(0, 24)}&start=2026-09-17&end=2026-09-17`);
+  assert.deepEqual(result.rows[0].pdfAttention.pages, [2, 40]);
+  const list = await report(DB, "view=users&start=2026-09-17&end=2026-09-17");
+  assert.equal(list.rows[0].pdfAttention, undefined);
+  const home = await session(db, DB, { kind: "page_view", path: "/" });
+  assert.equal(await saveReading(DB, { ...body, id: home, downloads: 0, hours: body.hours.map(h => ({ ...h, downloads: 0 })) }, visitor, now), 400);
+  const legacy = await session(db, DB);
+  await saveReading(DB, snapshot(legacy), visitor, now);
+  assert.equal((await historyReading(DB, dates("2026-09-17"), true, [legacy])).rows[0].pdfAttention, undefined);
+  const host = await session(db, DB, { personal: 1 });
+  await saveReading(DB, { ...body, id: host }, visitor, now);
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM reading_hours WHERE session_id=?").get(host).n, 0);
+});
+
+test("PDF bitsets are bounded, validate unsigned words and preserve distinct pages across hours", () => {
+  const value = { total: 10000, scrolled: 1, pages: Array(313).fill(4294967295) };
+  value.pages[312] = 65535;
+  assert.equal(validPdfAttention(value), true);
+  for (const change of [{ total: 10001 }, { scrolled: 2 }, { pages: [-1] }, { pages: Array(313).fill(4294967295) }]) assert.equal(validPdfAttention({ ...value, ...change }), false);
+  const full = snapshot(crypto.randomUUID(), { hours: Array.from({ length: 16 }, (_, i) => ({ hour: midnight - i * 3600, milliseconds: 3600000, downloads: 0, pdfAttention: value })), milliseconds: 16 * 3600000, downloads: 0 });
+  assert.equal(validReading(full, now), true);
+  assert(Buffer.byteLength(JSON.stringify(full)) < 64512);
+  assert.equal(summarizePdfAttention([value, value]).pages.length, 10000);
+  assert.equal(summarizePdfAttention([null]), undefined);
+  assert.equal(validReading({ ...full, hours: [...full.hours, { ...full.hours[0], hour: midnight - 16 * 3600 }], milliseconds: 17 * 3600000 }, now), false);
+});
 
 async function report(DB, search) {
   const response = await worker.fetch(new Request(`${ORIGIN}/__analytics/report?${search}`, { headers: { Authorization: `Bearer ${SECRET}` } }), { DB, READ_TOKEN: SECRET }, context());

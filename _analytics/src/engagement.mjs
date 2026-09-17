@@ -1,4 +1,5 @@
 import { validAttention, summarizeAttention, ATTENTION_MONOTONIC } from "./homepage-attention.mjs";
+import { validPdfAttention, summarizePdfAttention, PDF_ATTENTION_MONOTONIC } from "./pdf-attention.mjs";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const KINDS = new Set(["page_view", "pdf_request"]);
@@ -26,10 +27,13 @@ export function validReading(body, now = Date.now()) {
       || row.hour > Math.floor((now + 60000) / 3600000) * 3600
       || !Number.isSafeInteger(row.milliseconds) || row.milliseconds < 0 || row.milliseconds > 3600000
       || !Number.isSafeInteger(row.downloads) || row.downloads < 0 || row.downloads > 10000
-      || !validAttention(row.attention, row.milliseconds)) return false;
+      || !validAttention(row.attention, row.milliseconds) || !validPdfAttention(row.pdfAttention)
+      || (row.attention !== undefined && row.pdfAttention !== undefined)) return false;
     seen.add(row.hour); milliseconds += row.milliseconds; downloads += row.downloads;
   }
-  return milliseconds === body.milliseconds && downloads === body.downloads;
+  const pdf = body.hours.filter(row => row.pdfAttention !== undefined);
+  return milliseconds === body.milliseconds && downloads === body.downloads
+    && (!pdf.length || (body.hours.length <= 16 && pdf.every(row => row.pdfAttention.total === pdf[0].pdfAttention.total)));
 }
 
 export async function saveReading(db, body, visitor, now = Date.now()) {
@@ -41,6 +45,7 @@ export async function saveReading(db, body, visitor, now = Date.now()) {
   // Keep viewer confirmation and historical measurements, but never add host engagement.
   if (session.personal) return 204;
   if (body.hours.some(row => row.attention !== undefined) && (session.kind !== "page_view" || session.path !== "/")) return 400;
+  if (body.hours.some(row => row.pdfAttention !== undefined) && session.kind !== "pdf_request") return 400;
   if (body.seq <= session.seq) return 204;
   if (body.milliseconds < session.milliseconds || body.downloads < session.downloads
     || body.milliseconds > now - session.started_at * 1000 + 60000
@@ -52,15 +57,15 @@ export async function saveReading(db, body, visitor, now = Date.now()) {
       AND NOT EXISTS (SELECT 1 FROM reading_hours h WHERE h.session_id = reading_sessions.id
         AND NOT EXISTS (SELECT 1 FROM json_each(?) j WHERE json_extract(j.value,'$.hour') = h.hour
           AND json_extract(j.value,'$.milliseconds') >= h.milliseconds AND json_extract(j.value,'$.downloads') >= h.downloads
-          AND ${ATTENTION_MONOTONIC}))`)
+          AND ${ATTENTION_MONOTONIC} AND ${PDF_ATTENTION_MONOTONIC}))`)
     .bind(body.seq, body.milliseconds, body.downloads, lastSeen, body.active && now / 1000 - lastSeen <= 315 ? 1 : 0,
       body.id, visitor, body.seq, body.milliseconds, body.downloads, JSON.stringify(body.hours))];
   // Replayed/out-of-order check-ins cannot add time or download actions twice.
-  statements.push(db.prepare(`INSERT INTO reading_hours(session_id, hour, milliseconds, downloads, attention)
-    SELECT s.id, json_extract(j.value, '$.hour'), json_extract(j.value, '$.milliseconds'), json_extract(j.value, '$.downloads'), json_extract(j.value, '$.attention')
+  statements.push(db.prepare(`INSERT INTO reading_hours(session_id, hour, milliseconds, downloads, attention, pdf_attention)
+    SELECT s.id, json_extract(j.value, '$.hour'), json_extract(j.value, '$.milliseconds'), json_extract(j.value, '$.downloads'), json_extract(j.value, '$.attention'), json_extract(j.value, '$.pdfAttention')
     FROM reading_sessions s, json_each(?) j WHERE s.id = ? AND s.visitor_hash = ? AND s.seq = ? AND changes() = 1
-    ON CONFLICT(session_id, hour) DO UPDATE SET milliseconds = MAX(milliseconds, excluded.milliseconds), downloads = MAX(downloads, excluded.downloads), attention = excluded.attention
-    WHERE excluded.milliseconds > milliseconds OR excluded.downloads > downloads OR attention IS NOT excluded.attention`)
+    ON CONFLICT(session_id, hour) DO UPDATE SET milliseconds = MAX(milliseconds, excluded.milliseconds), downloads = MAX(downloads, excluded.downloads), attention = excluded.attention, pdf_attention = excluded.pdf_attention
+    WHERE excluded.milliseconds > milliseconds OR excluded.downloads > downloads OR attention IS NOT excluded.attention OR pdf_attention IS NOT excluded.pdf_attention`)
     .bind(JSON.stringify(body.hours), body.id, visitor, body.seq));
   await db.batch(statements);
   return 204;
@@ -118,13 +123,14 @@ export async function historyReading(db, dates, excludePersonal, ids) {
     const response = await db.prepare(`SELECT s.id,
     CASE WHEN COUNT(h.session_id) > 0 THEN 'tracked' WHEN s.seq < 0 THEN 'no_updates' ELSE 'outside_period' END AS readingStatus,
     SUM(h.milliseconds) / 1000.0 AS readingSeconds, SUM(h.downloads) AS downloads,
-    json_group_array(json(h.attention)) AS attentionHours FROM reading_sessions s
+    json_group_array(json(h.attention)) AS attentionHours, json_group_array(json(h.pdf_attention)) AS pdfAttentionHours FROM reading_sessions s
     LEFT JOIN reading_hours h ON h.session_id = s.id AND h.hour >= ? AND h.hour < ?
     WHERE s.id IN (${batch.map(() => "?").join(",")}) ${excludePersonal ? `AND NOT ${PERSONAL}` : ""} GROUP BY s.id`)
       .bind(dates.from, dates.until, ...batch).all();
-    rows.push(...response.results.map(({ readingSeconds, downloads, attentionHours, ...row }) => {
+    rows.push(...response.results.map(({ readingSeconds, downloads, attentionHours, pdfAttentionHours, ...row }) => {
       const homepageAttention = summarizeAttention(JSON.parse(attentionHours));
-      return { ...row, ...(readingSeconds === null ? {} : { readingSeconds, downloads }), ...(homepageAttention ? { homepageAttention } : {}) };
+      const pdfAttention = summarizePdfAttention(JSON.parse(pdfAttentionHours));
+      return { ...row, ...(readingSeconds === null ? {} : { readingSeconds, downloads }), ...(homepageAttention ? { homepageAttention } : {}), ...(pdfAttention ? { pdfAttention } : {}) };
     }));
     measured.push(["historyReading", response]);
   }

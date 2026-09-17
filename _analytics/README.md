@@ -109,6 +109,28 @@ in collapsed Homepage activity details. Historical NULL remains Not measured.
 Sequence guards and monotonic hourly counters prevent stale updates, double-counted
 opens, cross-user updates, or erasure of already-recorded attention.
 
+### PDF Attention
+
+Migration `0015_pdf_attention.sql` adds nullable, unindexed `pdf_attention` JSON
+to those same hourly rows. PDF.js records active scroll-position changes and a
+compact bitset of visible page numbers. The initial page counts; pre-rendered or
+offscreen pages do not. A page qualifies when at least half its height (or half
+the viewer height for tall pages) is visible, with positive horizontal overlap.
+The existing one-second sample and scroll listener update memory only. Page
+navigation jumps count as scrolling. These are visible pages, not proof of reading;
+page numbers include covers and need not match the document's printed labels.
+
+The private history query unions bitsets within the selected dates, reporting
+distinct pages viewed, total pages, furthest page and scrolling in a collapsed
+PDF activity dropdown. Old/native requests remain Not measured. No extra queries,
+per-page rows, timers or requests are added; changed JSON uses the existing hour
+write. Host and privacy exclusions remain unchanged, and no activity goes to GA.
+Bitset validation and atomic monotonic guards prevent erasure and invalid pages.
+PDF attention supports up to 10,000 pages and rotates after 16 observed UTC-hour
+buckets using the existing continuation flow, keeping even worst-case bodies
+below 64,512 bytes. Larger documents keep ordinary timing without page detail.
+Unsent changes can still be lost on abrupt exits. Nothing is backfilled.
+
 Downloads count PDF.js toolbar/keyboard download requests, not verified saved
 files. Browser-menu Save As, cancelled saves, offline reading, native fallback
 reading time and reading outside this viewer cannot be measured reliably. Print

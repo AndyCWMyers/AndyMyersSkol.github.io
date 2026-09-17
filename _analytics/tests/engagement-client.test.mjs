@@ -15,13 +15,17 @@ class Target {
 
 async function settle() { for (let i = 0; i < 12; i++) await Promise.resolve(); }
 
-function browser({ start = Date.UTC(2026, 8, 17, 6, 59, 59), cookie = "", privacy = {}, fetcher, kind = "pdf_view", nodes = [] } = {}) {
+function browser({ start = Date.UTC(2026, 8, 17, 6, 59, 59), cookie = "", privacy = {}, fetcher, kind = "pdf_view", nodes = [], pdf } = {}) {
   let mono = 0, wall = start, serial = 0, focused = true;
   const tasks = new Map(), requests = [], warnings = [];
   const window = new Target(), document = new Target();
   Object.assign(document, { visibilityState: "visible", cookie, referrer: "https://example.com/private?q=secret", hasFocus: () => focused });
   Object.assign(document, { querySelectorAll: () => nodes, documentElement: { scrollHeight: 2000 } });
   Object.assign(window, { scrollY: 0, innerHeight: 800, innerWidth: 600 });
+  if (pdf) {
+    window.PDFViewerApplication = { pdfViewer: { pagesCount: pdf.nodes.length, getPageView: i => ({ div: pdf.nodes[i] }) } };
+    document.getElementById = () => pdf.container;
+  }
   const navigator = { ...privacy };
   const context = vm.createContext({ window, document, navigator, URL, AbortController,
     console: { warn: text => warnings.push(text) },
@@ -55,6 +59,40 @@ function browser({ start = Date.UTC(2026, 8, 17, 6, 59, 59), cookie = "", privac
 }
 
 function latest(h) { return h.requests.filter(r => r.url.endsWith("/engagement")).at(-1).body; }
+
+test("PDF records only visible pages, scrolls without extra requests and respects focus/host/privacy", async () => {
+  const container = new Target();
+  Object.assign(container, { scrollTop: 0, scrollLeft: 0, getBoundingClientRect: () => ({ top: 0, bottom: 800, left: 0, right: 600, height: 800 }) });
+  const nodes = Array.from({ length: 40 }, (_, i) => ({ dataset: { pageNumber: String(i + 1) }, getBoundingClientRect: () => ({
+    top: i * 800 - container.scrollTop, bottom: (i + 1) * 800 - container.scrollTop, left: 0, right: 600, height: 800,
+  }) }));
+  const pdf = { container, nodes };
+  const h = browser({ pdf, start: Date.UTC(2026, 8, 17, 7) });
+  assert.deepEqual(latest(h).hours[0].pdfAttention, { total: 40, scrolled: 0, pages: [1, 0] });
+  container.scrollTop = 31 * 800; container.emit("scroll");
+  assert.equal(h.requests.length, 1);
+  for (let i = 0; i < 15; i++) await h.tick();
+  assert.deepEqual(latest(h).hours[0].pdfAttention, { total: 40, scrolled: 1, pages: [2147483649, 0] });
+  await h.visible(false);
+  container.scrollTop = 39 * 800; container.emit("scroll");
+  for (let i = 0; i < 15; i++) await h.tick();
+  assert.equal(latest(h).hours[0].pdfAttention.pages[1], 0);
+  await h.visible(true); await h.tick(); h.handle.download();
+  assert.equal(latest(h).hours[0].pdfAttention.pages[1], 128);
+  h.handle.stop();
+  assert.equal(container.listeners.get("scroll").size, 0);
+  for (const options of [{ cookie: "__Host-acw_personal=1" }, { privacy: { globalPrivacyControl: true } }]) {
+    const excluded = browser({ pdf, ...options });
+    await excluded.tick();
+    assert.equal(excluded.requests.length, 0);
+    assert.equal(container.listeners.get("scroll").size, 0);
+  }
+  const rotating = browser({ pdf });
+  for (let i = 0; i < 16; i++) { if (i) await rotating.tick(3600000); rotating.handle.download(); }
+  await rotating.tick(3600000); rotating.handle.download(); await settle();
+  assert.equal(rotating.requests.filter(r => r.url.endsWith("/event")).length, 1);
+  assert.notEqual(latest(rotating).id, "view-1");
+});
 
 function checkTotals(body) {
   assert.equal(body.milliseconds, body.hours.reduce((sum, h) => sum + h.milliseconds, 0));

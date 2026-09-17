@@ -27,6 +27,7 @@ function setup() {
   db.exec(readFileSync(new URL("../migrations/0010_headline_summaries.sql", import.meta.url), "utf8"));
   db.exec(readFileSync(new URL("../migrations/0011_reading_sessions.sql", import.meta.url), "utf8"));
   db.exec(readFileSync(new URL("../migrations/0014_homepage_attention.sql", import.meta.url), "utf8"));
+  db.exec(readFileSync(new URL("../migrations/0015_pdf_attention.sql", import.meta.url), "utf8"));
   const pending = [], ga = [];
   const prepare = sql => ({ bind: (...params) => ({ run: async () => db.prepare(sql).run(...params), all: async () => ({ results: db.prepare(sql).all(...params) }) }) });
   const env = { DB: { prepare, batch: queries => Promise.all(queries.map(query => query.all())) }, READ_TOKEN: SECRET,

@@ -135,6 +135,17 @@ when distinct counts omit some requests. No fabricated visitor backfill is used.
 
 ## Dashboard Details
 
+Country maps use `countryViews`, which counts page/PDF views and deduplicates
+browser identities across all regions and documents within each country. The
+`countries` detail dimension provides the same deduplication per destination,
+including outbound destinations, without summing distinct counts across regions.
+Both retain existing personal, bot, date and PDF-duplicate filters.
+
+The Users list is newest-first with 15 users per page; individual histories retain
+100 events per page and chronological order. Responses include `limit` so clients
+can navigate backward correctly. The dashboard's red Live indicator means activity
+within the past 20 minutes, not an open connection or verified human presence.
+
 All date filters and daily buckets use `America/Los_Angeles` (Pacific midnight),
 with daylight saving time handled by Intl. Timestamps remain stored as UTC epoch
 seconds; the dashboard formats them explicitly as PST or PDT. Reports identify

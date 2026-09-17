@@ -461,14 +461,44 @@ test("user list pagination includes every identity once and tie timestamps keep 
   const insert = s.db.prepare("INSERT INTO events(id,occurred_at,kind,path,visitor_hash) VALUES(?,?,'page_view',?,?)");
   for (let i = 1; i <= 101; i++) insert.run(String(i), now, "/", i.toString(16).padStart(64, "0").split("").reverse().join(""));
   const get = async offset => (await (await s.request(`/__analytics/report?view=users&offset=${offset}`, { Authorization: `Bearer ${SECRET}` })).json());
-  const first = await get(0), second = await get(100);
-  assert.equal(first.nextOffset, 100);
-  assert.equal(second.nextOffset, null);
-  assert.equal(new Set([...first.rows, ...second.rows].map(row => row.id)).size, 101);
+  const first = await get(0), pages = [first];
+  assert.equal(first.limit, 15);
+  assert.equal(first.rows.length, 15);
+  assert.equal(first.nextOffset, 15);
+  while (pages.at(-1).nextOffset !== null) pages.push(await get(pages.at(-1).nextOffset));
+  assert.equal(pages.at(-1).rows.length, 11);
+  const ids = pages.flatMap(page => page.rows.map(row => row.id));
+  assert.equal(new Set(ids).size, 101);
+  assert.deepEqual(ids, [...ids].sort());
+  assert.deepEqual((await get(0)).rows, first.rows);
   const hash = "f".repeat(64);
   insert.run("z-first", now, "/first", hash); insert.run("a-second", now, "/second", hash);
   const history = await (await s.request(`/__analytics/report?view=users&user=${hash.slice(0, 24)}`, { Authorization: `Bearer ${SECRET}` })).json();
   assert.deepEqual(history.rows.map(row => row.path), ["/first", "/second"]);
+});
+
+test("country maps deduplicate across regions and papers, with destination and personal filters", async () => {
+  const s = setup(), now = Math.floor(Date.now() / 1000), a = await visitorHash(A), b = await visitorHash(B);
+  const insert = s.db.prepare("INSERT INTO events(id,occurred_at,kind,path,target,visitor_hash,country,region,is_personal,bot,duplicate_of) VALUES(?,?,?,?,?,?,?,?,?,?,?)");
+  for (const [id, kind, path, hash, country, region, personal, bot, duplicate] of [
+    ["1", "page_view", "/", a, "US", "CA", 0, 0, ""],
+    ["2", "pdf_request", "/paper.pdf", a, "US", "NY", 0, 0, ""],
+    ["3", "pdf_request", "/paper.pdf", a, "US", "CA", 0, 0, ""],
+    ["4", "pdf_request", "/paper.pdf", b, "US", "CA", 1, 0, ""],
+    ["5", "outbound_click", "/paper.pdf", a, "FR", "", 0, 0, ""],
+    ["6", "pdf_request", "/paper.pdf", "", "GB", "", 0, 0, ""],
+    ["7", "pdf_request", "/paper.pdf", a, "US", "CA", 0, 1, ""],
+    ["8", "pdf_request", "/paper.pdf", a, "US", "CA", 0, 0, "3"],
+  ]) insert.run(id, now, kind, path, "https://example.com", hash, country, region, personal, bot, duplicate);
+  const get = async filter => (await (await s.request(`/__analytics/report?excludePersonal=${filter}`, { Authorization: `Bearer ${SECRET}` })).json());
+  const filtered = await get(1), all = await get(0);
+  assert.deepEqual(filtered.countryViews.find(row => row.name === "US"), { name: "US", count: 3, visitors: 1, identifiedRequests: 3, unidentifiedRequests: 0 });
+  assert.equal(all.countryViews.find(row => row.name === "US").visitors, 2);
+  assert.equal(filtered.countryViews.some(row => row.name === "FR"), false);
+  const paper = filtered.breakdowns.find(row => row.dimension === "countries" && row.name === "/paper.pdf" && row.value === "US");
+  assert.equal(paper.count, 2); assert.equal(paper.visitors, 1);
+  assert.equal(filtered.countryViews.find(row => row.name === "GB").unidentifiedRequests, 1);
+  assert.equal(filtered.breakdowns.find(row => row.dimension === "countries" && row.section === "outbound").value, "FR");
 });
 
 test("counties preserve unknowns, deduplicate across papers, and respect all filters and user histories", async () => {

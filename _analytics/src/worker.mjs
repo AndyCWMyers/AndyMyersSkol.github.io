@@ -221,10 +221,14 @@ async function report(request, env) {
       UNION ALL
       SELECT section, name, 'cities' AS dimension, city AS value, country || ' / ' || region AS detail, ${counts}
       FROM activity GROUP BY section, name, city, country, region
+      UNION ALL
+      SELECT section, name, 'countries' AS dimension, country AS value, '' AS detail, ${counts}
+      FROM activity GROUP BY section, name, country
     ), ranked AS (
       SELECT *, ROW_NUMBER() OVER (PARTITION BY section, name, dimension ORDER BY count DESC, value, detail) AS rank FROM location_counts
-    ) SELECT section, name, dimension, value, detail, count, visitors, identifiedRequests, unidentifiedRequests FROM ranked WHERE rank <= 50 ORDER BY section, name, rank`),
+    ) SELECT section, name, dimension, value, detail, count, visitors, identifiedRequests, unidentifiedRequests FROM ranked WHERE dimension = 'countries' OR rank <= 50 ORDER BY section, name, rank`),
     query(`SELECT city AS name, country, region, kind, COUNT(*) AS count FROM events WHERE ${where} AND bot = 0 AND kind IN ('page_view','pdf_request','outbound_click') GROUP BY city, country, region, kind ORDER BY count DESC`),
+    query(`SELECT country AS name, ${counts} FROM events WHERE ${where} AND bot = 0 AND kind IN ('page_view','pdf_request') GROUP BY country ORDER BY count DESC`),
   ]);
   const keys = ["totals", "daily", "pages", "outbound", "countries", "referrers", "devices", "campaigns"];
   results[1].results = pacificDaily(results[1].results);
@@ -236,6 +240,7 @@ async function report(request, env) {
     states: results[13].results,
     counties: results[14].results, countyViews: results[15].results,
     cities: results[17].results,
+    countryViews: results[18].results,
     gaPropertyId: "465165532", gaMeasurementId: env.GA_MEASUREMENT_ID, gaPdfForwarding: Boolean(env.GA_API_SECRET && env.GA_MEASUREMENT_ID),
     notes: ["PDF requests are retrieval starts, not confirmed reads. Same-browser/same-PDF retrievals within five seconds are counted once. Nonzero byte ranges are excluded; unidentified retries can still count twice.",
       "Distinct visitors are estimated browsers, not identified people, using a random 30-day cookie. Only its hash is stored in D1. Old requests have no visitor identifier and cannot be deduplicated.",

@@ -4,7 +4,7 @@ export async function userReport(db, url, dates, where, personal, excludePersona
   const user = url.searchParams.get("user") || "";
   const offsetText = url.searchParams.get("offset") || "0";
   if ((user && !/^[a-f0-9]{24}$/.test(user)) || !/^\d{1,7}$/.test(offsetText)) return { error: "Invalid user or offset" };
-  const offset = Number(offsetText), limit = 100;
+  const offset = Number(offsetText), limit = user ? 100 : 15;
   const base = `FROM events WHERE ${where} AND bot = 0 AND visitor_hash != '' AND kind IN ('page_view', 'pdf_request', 'outbound_click')`;
   let rows, addresses = [], unrecordedIpEvents = 0;
   if (user) {
@@ -36,7 +36,7 @@ export async function userReport(db, url, dates, where, personal, excludePersona
       FROM activity GROUP BY visitor_hash ORDER BY lastSeen DESC, id LIMIT ? OFFSET ?`)
       .bind(dates.from, dates.until, limit + 1, offset).all();
   }
-  return { start: dates.start, end: dates.end, excludePersonal, user, offset,
+  return { start: dates.start, end: dates.end, excludePersonal, user, offset, limit,
     ...(user ? { addresses, unrecordedIpEvents } : {}),
     rows: rows.results.slice(0, limit), nextOffset: rows.results.length > limit ? offset + limit : null };
 }

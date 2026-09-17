@@ -9,9 +9,11 @@ and private engagement reports.
   trackingEnabled = true, diagnosticId = ''): Response`. The Worker must allowlist canonical PDF
   paths and invoke it only for browser GET navigation. Invalid paths throw.
   `measurementId` is reserved and intentionally unused: no browser GA event.
-- `isPdfNavigation(request)` accepts GET requests explicitly accepting HTML,
-  including browsers without Fetch Metadata. Explicit non-navigation destinations
-  or modes, range requests, and HTML with quality zero are excluded. The Worker
+- `isPdfNavigation(request)` accepts GET requests with `Sec-Fetch-Mode: navigate`
+  and `Sec-Fetch-Dest: document` or `iframe`, even without HTML in Accept.
+  Explicit HTML acceptance remains a fallback for browsers without Fetch Metadata;
+  HTML with quality zero is not sufficient for that fallback. Explicit
+  non-navigation destinations or modes and all range requests are excluded. The Worker
   separately preserves bots, unknown document paths and explicit raw URLs.
 - Serve the default string export of `src/engagement-client.mjs` at
   `/__analytics/engagement.js` with JavaScript content type. It installs

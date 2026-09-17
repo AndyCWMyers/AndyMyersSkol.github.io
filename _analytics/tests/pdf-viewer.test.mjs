@@ -53,6 +53,22 @@ test("HTML navigations work without Fetch Metadata while byte clients stay raw",
   assert.equal(check({ Accept: "text/html" }, "HEAD"), false);
 });
 
+test("explicit browser navigations use PDF.js without HTML Accept while byte clients stay raw", () => {
+  const check = (headers, method = "GET") => isPdfNavigation(new Request("https://site.example/paper.pdf", { headers, method }));
+  for (const destination of ["document", "iframe"]) {
+    for (const accept of [undefined, "*/*", "application/pdf"]) {
+      const headers = { "Sec-Fetch-Dest": destination, "Sec-Fetch-Mode": "navigate", ...(accept ? { Accept: accept } : {}) };
+      assert.equal(check(headers), true);
+      assert.equal(check({ ...headers, Range: "bytes=0-" }), false);
+      assert.equal(check({ ...headers, Range: "bytes=100-200" }), false);
+      assert.equal(check(headers, "HEAD"), false);
+    }
+  }
+  for (const headers of [{ "Sec-Fetch-Dest": "document" }, { "Sec-Fetch-Mode": "navigate" },
+    { "Sec-Fetch-Dest": "empty", "Sec-Fetch-Mode": "navigate" },
+    { "Sec-Fetch-Dest": "document", "Sec-Fetch-Mode": "cors" }]) assert.equal(check({ Accept: "application/pdf", ...headers }), false);
+});
+
 test("diagnostics report bounded startup/render/error codes, reuse route ID, and honor privacy", async () => {
   const diagnosticId = "11111111-1111-4111-8111-111111111111";
   const h = await bootstrap({ diagnosticId });

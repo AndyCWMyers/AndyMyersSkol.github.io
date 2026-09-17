@@ -266,6 +266,8 @@ test("viewer navigation and byte fetch do not create events; rendered acknowledg
   assert.equal(await raw.text(), "%PDF-original");
   const legacy = await worker.fetch(new Request(ORIGIN + PDF, { headers: { Accept: "text/html", Cookie: cookie, "User-Agent": "Safari/605" } }), env, ctx);
   assert.match(legacy.headers.get("Content-Type"), /text\/html/);
+  const navigationWithoutHtml = await worker.fetch(new Request(ORIGIN + PDF, { headers: { Accept: "application/pdf", "Sec-Fetch-Dest": "document", "Sec-Fetch-Mode": "navigate", Cookie: cookie } }), env, ctx);
+  assert.match(navigationWithoutHtml.headers.get("Content-Type"), /text\/html/);
   const marked = await worker.fetch(new Request(`${ORIGIN}${PDF}?__pdf=raw`, { headers: { Cookie: cookie, "X-ACW-PDF-Viewer": "1" } }), env, ctx);
   assert.equal(await marked.text(), "%PDF-original");
   const id = crypto.randomUUID(), body = JSON.stringify({ id, kind: "pdf_view", path: PDF, referrer: "" });
@@ -285,7 +287,7 @@ test("broader routing preserves raw downloads, bots, range requests and opt-outs
   }
   for (const [path, headers, method] of [[PDF + "?__pdf=raw", {}, "GET"], [PDF, { "User-Agent": "Googlebot" }, "GET"],
     [PDF, { Range: "bytes=100-" }, "GET"], [PDF, {}, "HEAD"], ["/unknown.pdf", {}, "GET"]]) {
-    const response = await worker.fetch(new Request(ORIGIN + path, { method, headers: { Accept: "text/html", ...headers } }), env, ctx);
+    const response = await worker.fetch(new Request(ORIGIN + path, { method, headers: { Accept: "application/pdf", "Sec-Fetch-Dest": "document", "Sec-Fetch-Mode": "navigate", ...headers } }), env, ctx);
     assert.equal(await response.text(), "%PDF-original");
   }
   await ctx.finish();

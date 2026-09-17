@@ -10,6 +10,8 @@ export function pdfNavigationReason(request) {
   const destination = request.headers.get("Sec-Fetch-Dest"), mode = request.headers.get("Sec-Fetch-Mode");
   if (destination && !["document", "iframe"].includes(destination)) return "non_document_destination";
   if (mode && mode !== "navigate") return "non_navigation_mode";
+  // Explicit document navigation is sufficient even without HTML in Accept.
+  if (mode === "navigate" && ["document", "iframe"].includes(destination)) return "viewer";
   // Older browsers may omit Fetch Metadata. Explicit HTML acceptance is sufficient.
   const html = (request.headers.get("Accept") || "").split(",").some(value => {
     const [type, ...parameters] = value.trim().toLowerCase().split(";");

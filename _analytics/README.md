@@ -96,9 +96,11 @@ views refresh once per minute; hidden tabs do not poll.
 
 The real generic PDF.js release and licenses are in `viewer-assets/` and deployed
 through the private ASSETS binding, served at `/__pdfjs/`. The Worker allowlists
-known documents, serves its HTML at the original PDF URL for requests accepting
-HTML (even without Fetch Metadata), and serves original bytes at `?__pdf=raw`.
-Explicit non-navigation fetches, range requests, HEAD, bots and PDF-only clients retain
+known documents and serves its HTML at the original PDF URL for explicit document
+or iframe navigations (`Sec-Fetch-Mode: navigate`), even without HTML in Accept.
+Accepting HTML remains a fallback when Fetch Metadata is missing. Original bytes
+remain available at `?__pdf=raw`. Explicit non-navigation fetches, range requests,
+HEAD, bots and PDF-only clients without clear navigation headers retain
 native PDF responses. Search, thumbnails, zoom, navigation, print and download
 remain native PDF.js controls. Local-file opening, scripting and editing are
 disabled. Internal PDF.js byte fetches carry `X-ACW-PDF-Viewer: 1` so older browsers

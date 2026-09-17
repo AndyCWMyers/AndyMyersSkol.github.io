@@ -28,6 +28,7 @@ async function viewer(h, headers = {}) {
 test("routing reasons preserve navigation behavior and identify raw-client decisions", () => {
   for (const [headers, reason] of [
     [{ Accept: "text/html" }, "viewer"], [{ Accept: "application/pdf" }, "html_not_accepted"],
+    [{ Accept: "application/pdf", "Sec-Fetch-Dest": "document", "Sec-Fetch-Mode": "navigate" }, "viewer"],
     [{ Accept: "text/html", Range: "bytes=0-" }, "range_request"],
     [{ Accept: "text/html", "Sec-Fetch-Dest": "embed" }, "non_document_destination"],
     [{ Accept: "text/html", "Sec-Fetch-Mode": "cors" }, "non_navigation_mode"],

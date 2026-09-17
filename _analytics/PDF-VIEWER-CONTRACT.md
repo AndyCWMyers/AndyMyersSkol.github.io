@@ -79,6 +79,14 @@ Fetch uses keepalive; a failed request retries at most twice, with the identical
 body/sequence. A backend should take per-hour maxima and reject stale sequence
 numbers for session state. Network delivery at browser termination is best effort.
 
+Homepage-only hour buckets may additionally include `attention` with `depth`
+(integer 0-100), `scrolled` (0/1), `sections` (five-bit mask), and `items` tuples
+`[stableId, visibleMilliseconds, abstractOpens, abstractVisibleMilliseconds]`.
+The bounded catalog and validation live in `homepage-attention.mjs`. These fields
+share existing saves and are forbidden for PDF sessions. Old payloads remain
+valid without them; absent historical values mean unknown. The ingestion body
+limit is 64,512 bytes. Attention fields are cumulative and cannot decrease.
+
 At a 129th distinct UTC hour, the helper sends the complete old session with
 `active:false`, then starts a new view with a fresh ID (`engagement:true`) and
 waits for OK before starting its next tracker. New-view kind is preserved; this

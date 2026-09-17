@@ -78,6 +78,37 @@ view ID; normal visits do not rotate. `liveAt` comes from an active check-in, wi
 a 315-second freshness tolerance; a received pause clears it immediately. This
 is recent activity, not guaranteed real-time presence.
 
+### Homepage Attention
+
+Migration `0014_homepage_attention.sql` adds nullable, unindexed JSON to the
+existing `reading_hours` row. New homepage trackers record section reach,
+maximum viewport-bottom depth, whether scroll position changed while active,
+and per-entry visible milliseconds, abstract/summary opens and expanded visible
+milliseconds. Stable numeric `data-acw-item` IDs map to the server catalog in
+`homepage-attention.mjs`; never reuse IDs. `data-acw-section` is the section index.
+
+IntersectionObserver narrows candidates; the existing one-second reading sample
+checks that at least half the entry (or half the viewport for tall entries) is
+visible. Abstract visibility can also qualify the containing entry. Entries
+with less than two cumulative visible seconds and no opens are omitted from
+reports. Multiple entries can accrue time simultaneously; this is exposure,
+not eye tracking. Scroll includes anchor jumps and browser-driven position changes,
+not just manual gestures. Initial viewport depth is not evidence of scrolling.
+
+Scroll/toggle handlers only update memory. Attention rides on existing cumulative
+checkpoints, with no extra timer, network call or per-interaction database row.
+Only changed hourly JSON is written; a metadata-only change can update an hour
+even without added time. The current 15-entry/128-hour maximum fits a 64,512-byte
+request bound, below the 64 KiB keepalive body limit; tests enforce that budget.
+Concurrent keepalive requests and abrupt exits can still lose unsent updates.
+Host/privacy exclusions are unchanged. Nothing is sent to Google Analytics.
+
+Only authenticated individual histories include attention, folded into the existing
+hourly history query and scoped to the selected dates. The Command Center shows it
+in collapsed Homepage activity details. Historical NULL remains Not measured.
+Sequence guards and monotonic hourly counters prevent stale updates, double-counted
+opens, cross-user updates, or erasure of already-recorded attention.
+
 Downloads count PDF.js toolbar/keyboard download requests, not verified saved
 files. Browser-menu Save As, cancelled saves, offline reading, native fallback
 reading time and reading outside this viewer cannot be measured reliably. Print

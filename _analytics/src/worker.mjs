@@ -194,7 +194,7 @@ async function engagement(request, env) {
   if (!env.DB) return json({ error: "Database unavailable" }, 503);
   if (env.COLLECT_LIMIT && !(await env.COLLECT_LIMIT.limit({ key: `reading:${request.headers.get("CF-Connecting-IP") || "unknown"}` })).success) return json({ error: "Rate limited" }, 429);
   let body;
-  try { body = await boundedJson(request, 16384); } catch { return json({ error: "Invalid reading update" }, 400); }
+  try { body = await boundedJson(request, 64512); } catch { return json({ error: "Invalid reading update" }, 400); }
   const status = await saveReading(env.DB, body, await visitorHash(visitorIdentity(request).value));
   return status === 204 ? new Response(null, { status, headers: JSON_HEADERS }) : json({ error: "Invalid reading update" }, status);
 }

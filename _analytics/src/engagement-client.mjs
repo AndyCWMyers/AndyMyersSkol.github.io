@@ -1,4 +1,5 @@
 // Served verbatim as /__analytics/engagement.js; no bundler/runtime dependencies.
+import homepageAttentionSource from "./homepage-attention-client.mjs";
 export default String.raw`(() => {
   "use strict";
   const HOUR = 3600000;
@@ -8,6 +9,8 @@ export default String.raw`(() => {
   const MAX_GAP = 5000;
   const MAX_HOURS = 128;
   const noop = { download() {}, stop() {} };
+
+  ${homepageAttentionSource}
 
   function allowed() {
     return !navigator.globalPrivacyControl && navigator.doNotTrack !== "1" &&
@@ -41,6 +44,8 @@ export default String.raw`(() => {
     const hours = new Map();
     const listeners = [];
     let timer;
+    const attention = kind === "page_view" && ["/", "/index", "/index.html"].includes(path)
+      ? homepageAttention({ bucket, active, allowed }) : null;
 
     function active() {
       return !stopped && inPage && focused && document.visibilityState === "visible";
@@ -70,6 +75,7 @@ export default String.raw`(() => {
           const credited = Math.min(span, HOUR - item.milliseconds);
           item.milliseconds += credited;
           milliseconds += credited;
+          attention?.sample(item, credited);
           cursor += span;
           remaining -= span;
         }
@@ -91,6 +97,7 @@ export default String.raw`(() => {
 
     function detach() {
       clearInterval(timer);
+      attention?.detach();
       for (const [target, event, callback] of listeners) target.removeEventListener(event, callback);
     }
 
@@ -166,7 +173,9 @@ export default String.raw`(() => {
     listeners.push([document, "visibilitychange", transition]);
     for (const [target, event, callback] of listeners) target.addEventListener(event, callback);
     timer = setInterval(tick, 1000);
-    bucket(Date.now());
+    const initial = bucket(Date.now());
+    attention?.initialize(initial);
+    if (active()) attention?.sample(initial, 0);
     save();
     return { download, stop };
   }

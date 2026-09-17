@@ -5,6 +5,7 @@ import { readFileSync, readdirSync } from "node:fs";
 import worker, { reportDates } from "../src/worker.mjs";
 import { startReading, saveReading, validReading, readingItems, userReading, historyReading } from "../src/engagement.mjs";
 import { visitorHash } from "../src/preferences.mjs";
+import { HOMEPAGE_ITEMS, validAttention, summarizeAttention } from "../src/homepage-attention.mjs";
 
 const ORIGIN = "https://www.andrewcwmyers.com";
 const PDF = "/andrew_c_w_myers_CV.pdf";
@@ -55,6 +56,63 @@ async function report(DB, search) {
   assert.equal(response.status, 200);
   return response.json();
 }
+
+test("homepage attention reuses hourly rows, is cumulative and only appears in scoped private histories", async () => {
+  const { DB, db } = database();
+  const id = await session(db, DB, { kind: "page_view", path: "/" });
+  const before = { depth: 40, scrolled: 0, sections: 3, items: [[1, 10000, 1, 5000]] };
+  const after = { depth: 90, scrolled: 1, sections: 6, items: [[1, 15000, 2, 10000], [7, 5000, 0, 0]] };
+  const body = snapshot(id, { downloads: 0, hours: [
+    { hour: midnight - 3600, milliseconds: 120000, downloads: 0, attention: before },
+    { hour: midnight, milliseconds: 180000, downloads: 0, attention: after },
+  ] });
+  assert.equal(await saveReading(DB, body, visitor, now), 204);
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM reading_hours").get().n, 2);
+  const saved = db.prepare("SELECT * FROM reading_hours ORDER BY hour").all();
+  await saveReading(DB, body, visitor, now);
+  await saveReading(DB, { ...body, seq: 0 }, visitor, now);
+  assert.deepEqual(db.prepare("SELECT * FROM reading_hours ORDER BY hour").all(), saved);
+  const result = await report(DB, `view=users&user=${visitor.slice(0, 24)}&start=2026-09-17&end=2026-09-17`);
+  assert.deepEqual(result.rows[0].homepageAttention, summarizeAttention([after]));
+  const previous = await historyReading(DB, dates("2026-09-16"), true, [id]);
+  assert.deepEqual(previous.rows[0].homepageAttention, summarizeAttention([before]));
+  const list = await report(DB, "view=users&start=2026-09-17&end=2026-09-17");
+  assert.equal(list.rows[0].homepageAttention, undefined);
+  // New sequence numbers cannot erase earlier per-hour detail or replay opens.
+  for (const attention of [undefined, { ...after, depth: 20 }, { ...after, scrolled: 0 }, { ...after, sections: 2 }, { ...after, items: [[1, 15000, 1, 10000]] }]) {
+    await saveReading(DB, { ...body, seq: 2, hours: [body.hours[0], { ...body.hours[1], attention }] }, visitor, now);
+    assert.equal(db.prepare("SELECT seq FROM reading_sessions WHERE id = ?").get(id).seq, 1);
+    assert.deepEqual(db.prepare("SELECT * FROM reading_hours ORDER BY hour").all(), saved);
+  }
+  const count = db.prepare("SELECT total_changes() AS n").get().n;
+  const next = { ...body, seq: 2, milliseconds: 301000, hours: [body.hours[0], { ...body.hours[1], milliseconds: 181000, attention: { ...after, items: [[1, 16000, 2, 11000], [7, 5000, 0, 0]] } }] };
+  await saveReading(DB, next, visitor, now);
+  assert.equal(db.prepare("SELECT total_changes() AS n").get().n - count, 2, "same session update and changed hourly row as ordinary reading");
+  const legacy = await session(db, DB, { kind: "page_view", path: "/" });
+  await saveReading(DB, snapshot(legacy, { downloads: 0, hours: body.hours.map(({ attention, ...row }) => row) }), visitor, now);
+  assert.equal((await historyReading(DB, dates("2026-09-17"), true, [legacy])).rows[0].homepageAttention, undefined);
+  const host = await session(db, DB, { kind: "page_view", path: "/", personal: 1 });
+  await saveReading(DB, { ...body, id: host }, visitor, now);
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM reading_hours WHERE session_id = ?").get(host).n, 0);
+  const pdf = await session(db, DB);
+  assert.equal(await saveReading(DB, { ...body, id: pdf }, visitor, now), 400);
+  assert.equal(await saveReading(DB, body, "b".repeat(64), now), 404);
+});
+
+test("attention payloads are bounded, omit short exposures, and match stable homepage markup", () => {
+  const attention = { depth: 100, scrolled: 1, sections: 31, items: HOMEPAGE_ITEMS.map(item => [item.id, 3600000, 1000, 3600000]) };
+  assert.equal(validAttention(attention, 3600000), true);
+  for (const change of [{ depth: 101 }, { scrolled: true }, { sections: 32 }, { arbitrary: "untrusted" }, { items: [[99, 0, 0, 0]] }, { items: [[1, 0, 0, 1]] }, { items: [[1, 0, 1001, 0]] }, { items: [[1, 0, 0, 0], [1, 0, 0, 0]] }]) {
+    assert.equal(validAttention({ ...attention, ...change }, 3600000), false);
+  }
+  const payload = snapshot(crypto.randomUUID(), { hours: Array.from({ length: 128 }, (_, i) => ({ hour: midnight - i * 3600, milliseconds: 3600000, downloads: 0, attention })) });
+  assert.ok(Buffer.byteLength(JSON.stringify(payload)) < 64512, "even 128 full hours fit below the 64 KiB keepalive limit");
+  assert.equal(summarizeAttention([null]), undefined);
+  assert.deepEqual(summarizeAttention([{ depth: 20, scrolled: 0, sections: 0, items: [[1, 1000, 0, 0], [2, 0, 1, 0]] }]).items.map(item => item.id), [2]);
+  const html = readFileSync(new URL("../../index.html", import.meta.url), "utf8");
+  const ids = [...html.matchAll(/data-acw-item="(\d+)"/g)].map(match => Number(match[1]));
+  assert.deepEqual(ids, HOMEPAGE_ITEMS.map(item => item.id));
+});
 
 test("user lists distinguish PDF retrievals from confirmed viewer sessions without updates", async () => {
   const { DB, db } = database();

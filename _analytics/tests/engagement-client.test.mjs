@@ -15,11 +15,13 @@ class Target {
 
 async function settle() { for (let i = 0; i < 12; i++) await Promise.resolve(); }
 
-function browser({ start = Date.UTC(2026, 8, 17, 6, 59, 59), cookie = "", privacy = {}, fetcher, kind = "pdf_view" } = {}) {
+function browser({ start = Date.UTC(2026, 8, 17, 6, 59, 59), cookie = "", privacy = {}, fetcher, kind = "pdf_view", nodes = [] } = {}) {
   let mono = 0, wall = start, serial = 0, focused = true;
   const tasks = new Map(), requests = [], warnings = [];
   const window = new Target(), document = new Target();
   Object.assign(document, { visibilityState: "visible", cookie, referrer: "https://example.com/private?q=secret", hasFocus: () => focused });
+  Object.assign(document, { querySelectorAll: () => nodes, documentElement: { scrollHeight: 2000 } });
+  Object.assign(window, { scrollY: 0, innerHeight: 800, innerWidth: 600 });
   const navigator = { ...privacy };
   const context = vm.createContext({ window, document, navigator, URL, AbortController,
     console: { warn: text => warnings.push(text) },
@@ -247,4 +249,40 @@ test("terminal pagehide flushes and removes listeners; explicit stop is idempote
   h.window.emit("pageshow", { persisted: false });
   await h.tick();
   assert.equal(h.requests.length, count);
+});
+
+test("homepage attention shares checkpoints, respects visibility, tracks scroll and counts abstract opens once", async () => {
+  const detail = new Target(); detail.open = false;
+  let rect = { top: 100, bottom: 400, left: 0, right: 600, height: 300 };
+  const abstract = { getBoundingClientRect: () => rect };
+  detail.querySelector = () => abstract;
+  const node = { dataset: { acwSection: "1", acwItem: "1" }, getBoundingClientRect: () => rect, querySelector: () => detail };
+  const h = browser({ kind: "page_view", nodes: [node], start: Date.UTC(2026, 8, 17, 7) });
+  assert.deepEqual(latest(h).hours[0].attention, { depth: 40, scrolled: 0, sections: 2, items: [[1, 0, 0, 0]] });
+  for (let i = 0; i < 10; i++) await h.tick();
+  detail.open = true; detail.emit("toggle"); detail.emit("toggle");
+  h.window.scrollY = 800; h.window.emit("scroll");
+  assert.equal(h.requests.length, 1, "opening and scrolling make no requests");
+  for (let i = 0; i < 5; i++) await h.tick();
+  assert.deepEqual(latest(h).hours[0].attention, { depth: 80, scrolled: 1, sections: 2, items: [[1, 15000, 1, 5000]] });
+  await h.visible(false);
+  h.window.scrollY = 1200; h.window.emit("scroll");
+  detail.open = false; detail.emit("toggle"); detail.open = true; detail.emit("toggle");
+  for (let i = 0; i < 10; i++) await h.tick();
+  await h.visible(true);
+  assert.equal(latest(h).hours[0].attention.depth, 80);
+  rect = { ...rect, top: -1000, bottom: -700 };
+  for (let i = 0; i < 15; i++) await h.tick();
+  h.handle.stop();
+  assert.deepEqual(latest(h).hours[0].attention.items, [[1, 15000, 1, 5000]]);
+  assert.equal(h.window.listeners.get("scroll").size, 0);
+  assert.equal(detail.listeners.get("toggle").size, 0);
+  for (const options of [{ cookie: "__Host-acw_personal=1" }, { privacy: { globalPrivacyControl: true } }, { privacy: { doNotTrack: "1" } }]) {
+    const excluded = browser({ ...options, kind: "page_view", nodes: [node] });
+    await excluded.tick();
+    assert.equal(excluded.requests.length, 0);
+  }
+  const pdf = browser({ nodes: [node] });
+  await pdf.tick(); pdf.handle.stop();
+  assert.equal(latest(pdf).hours[0].attention, undefined);
 });

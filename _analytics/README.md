@@ -115,6 +115,11 @@ when distinct counts omit some requests. No fabricated visitor backfill is used.
 
 ## Dashboard Details
 
+All date filters and daily buckets use `America/Los_Angeles` (Pacific midnight),
+with daylight saving time handled by Intl. Timestamps remain stored as UTC epoch
+seconds; the dashboard formats them explicitly as PST or PDT. Reports identify
+their time zone, so old UTC snapshots are not relabeled as Pacific reports.
+
 The original tabs remain. Homepage and CV are pinned first in Papers & CV, followed
 by current public papers (including those with no views). Maintain `src/documents.mjs`
 when changing public paper titles or links; its tests verify titles and local assets.

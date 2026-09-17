@@ -3,6 +3,7 @@ import { pdfIdentity, pdfCookie, sendPdfEvent } from "./ga.mjs";
 import { excludedBrowser, personalBrowser, preferences, visitorIdentity, visitorHash } from "./preferences.mjs";
 import documents from "./documents.mjs";
 import { userReport } from "./users.mjs";
+import { TIME_ZONE, pacificDate, pacificMidnight, pacificDaily } from "./time.mjs";
 
 // Configuration and bounded, privacy-preserving normalization.
 const HOSTS = new Set(["www.andrewcwmyers.com", "andrewcwmyers.com"]);
@@ -130,12 +131,12 @@ async function collect(request, env, ctx) {
 }
 
 export function reportDates(url) {
-  const end = url.searchParams.get("end") || new Date().toISOString().slice(0, 10);
-  const start = url.searchParams.get("start") || new Date(Date.now() - 29 * 86400000).toISOString().slice(0, 10);
+  const end = url.searchParams.get("end") || pacificDate();
+  const start = url.searchParams.get("start") || new Date(Date.parse(pacificDate()) - 29 * 86400000).toISOString().slice(0, 10);
   const valid = (s) => /^\d{4}-\d{2}-\d{2}$/.test(s) && !Number.isNaN(Date.parse(s)) && new Date(s).toISOString().slice(0, 10) === s;
   if (!valid(start) || !valid(end)) return null;
-  const from = Date.parse(start) / 1000, until = Date.parse(end) / 1000 + 86400;
-  if (until <= from || until - from > 366 * 86400) return null;
+  if (end < start || Date.parse(end) - Date.parse(start) >= 366 * 86400000) return null;
+  const from = pacificMidnight(start), until = pacificMidnight(new Date(Date.parse(end) + 86400000).toISOString().slice(0, 10));
   return { start, end, from, until };
 }
 
@@ -177,7 +178,7 @@ async function report(request, env) {
   // Fixed aggregate queries; user histories use the private view above.
   const results = await env.DB.batch([
     query(`SELECT kind, bot, ${counts} FROM events WHERE ${where} GROUP BY kind, bot`),
-    query(`SELECT date(occurred_at, 'unixepoch') AS day, kind, COUNT(*) AS count FROM events WHERE ${where} AND bot = 0 GROUP BY day, kind ORDER BY day`),
+    query(`SELECT strftime('%Y-%m-%dT%H:00:00Z', occurred_at, 'unixepoch') AS hour, kind, COUNT(*) AS count FROM events WHERE ${where} AND bot = 0 GROUP BY hour, kind ORDER BY hour`),
     query(`SELECT CASE WHEN kind = 'pdf_click' THEN target ELSE path END AS name, kind, COUNT(*) AS count FROM events WHERE ${where} AND bot = 0 AND kind IN ('pdf_request','pdf_click','page_view') GROUP BY name, kind ORDER BY count DESC LIMIT 100`),
     query(`SELECT target AS name, COUNT(*) AS count FROM events WHERE ${where} AND bot = 0 AND kind = 'outbound_click' GROUP BY target ORDER BY count DESC LIMIT 100`),
     query(`SELECT country AS name, kind, COUNT(*) AS count FROM events WHERE ${where} AND bot = 0 AND kind IN ('page_view','pdf_request','outbound_click') GROUP BY country, kind ORDER BY count DESC`),
@@ -194,7 +195,8 @@ async function report(request, env) {
     query(`SELECT region AS name, ${counts} FROM events WHERE ${where} AND bot = 0 AND country = 'US' AND kind IN ('page_view','pdf_request') GROUP BY region ORDER BY count DESC`),
   ]);
   const keys = ["totals", "daily", "pages", "outbound", "countries", "referrers", "devices", "campaigns"];
-  return json({ generatedAt: new Date().toISOString(), start: dates.start, end: dates.end,
+  results[1].results = pacificDaily(results[1].results);
+  return json({ generatedAt: new Date().toISOString(), timeZone: TIME_ZONE, start: dates.start, end: dates.end,
     ...Object.fromEntries(keys.map((key, i) => [key, results[i].results])),
     pdfVisitors: results[8].results[0], pdfVisitorsByPath: results[9].results,
     documents, items: results[10].results, breakdowns: results[11].results,

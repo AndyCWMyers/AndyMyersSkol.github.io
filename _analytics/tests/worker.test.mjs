@@ -66,7 +66,21 @@ test("date validation prevents unbounded and malformed queries", () => {
   assert.equal(reportDates(new URL(ORIGIN + "?start=2026-02-30&end=2026-03-01")), null);
   assert.equal(reportDates(new URL(ORIGIN + "?start=2020-01-01&end=2026-01-01")), null);
   assert.equal(reportDates(new URL(ORIGIN + "?start=2026-03-02&end=2026-03-01")), null);
-  assert.equal(reportDates(new URL(ORIGIN + "?start=2026-03-01&end=2026-03-01")).until - Date.parse("2026-03-01") / 1000, 86400);
+  assert.equal(reportDates(new URL(ORIGIN + "?start=2026-03-01&end=2026-03-01")).until - Date.parse("2026-03-01T08:00:00Z") / 1000, 86400);
+});
+
+test("Pacific date filters and daily totals share local midnight boundaries", async () => {
+  const { db, DB } = database();
+  const times = ["2026-09-16T06:59:59Z", "2026-09-16T07:00:00Z", "2026-09-17T06:59:59Z", "2026-09-17T07:00:00Z"];
+  for (const time of times) db.prepare("INSERT INTO events(id,occurred_at,kind,path,visitor_hash) VALUES(?,?,'page_view','/',?)").run(time, Date.parse(time) / 1000, "a".repeat(64));
+  const env = { DB, READ_TOKEN: SECRET }, headers = { Authorization: `Bearer ${SECRET}` };
+  const response = await worker.fetch(request("/__analytics/report?start=2026-09-16&end=2026-09-16", { headers }), env, context());
+  const report = await response.json();
+  assert.equal(report.timeZone, "America/Los_Angeles");
+  assert.equal(report.totals[0].count, 2);
+  assert.deepEqual(report.daily, [{ day: "2026-09-16", kind: "page_view", count: 2 }]);
+  const history = await (await worker.fetch(request(`/__analytics/report?view=users&user=${"a".repeat(24)}&start=2026-09-16&end=2026-09-16`, { headers }), env, context())).json();
+  assert.deepEqual(history.rows.map(row => row.time), times.slice(1, 3).map(time => Date.parse(time) / 1000));
 });
 
 test("read API is fail-closed and never exposes an arbitrary SQL endpoint", async () => {

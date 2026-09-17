@@ -74,7 +74,7 @@ test("cities come only from bounded edge metadata, including international city 
   assert.equal(db.prepare("SELECT city FROM events").get().city, "Montr\u00e9al");
 });
 
-test("OS families come from user agents and bot scores only from valid edge metadata", async () => {
+test("OS families come from user agents and bot scores are no longer saved", async () => {
   for (const [ua, os] of [["iPhone Mac OS X", "iOS"], ["iPad", "iOS"], ["Android Linux", "Android"], ["CrOS Linux", "ChromeOS"], ["Windows NT 10.0", "Windows"], ["Macintosh", "macOS"], ["Linux", "Linux"], ["unknown", ""]]) {
     assert.equal(agentInfo(ua).os, os);
   }
@@ -87,7 +87,7 @@ test("OS families come from user agents and bot scores only from valid edge meta
   await ctx.finish();
   const rows = db.prepare("SELECT os, bot_score FROM events ORDER BY rowid").all();
   assert.ok(rows.every(row => row.os === "iOS"));
-  assert.deepEqual(rows.map(row => row.bot_score), [1, 99, null, null, null, null, null]);
+  assert.deepEqual(rows.map(row => row.bot_score), Array(7).fill(null));
 });
 
 test("production fetch keeps its native receiver and enables fallback only for public content", async () => {
@@ -141,7 +141,7 @@ test("Pacific date filters and daily totals share local midnight boundaries", as
   assert.equal(report.totals[0].count, 2);
   assert.deepEqual(report.daily, [{ day: "2026-09-16", kind: "page_view", count: 2 }]);
   const history = await (await worker.fetch(request(`/__analytics/report?view=users&user=${"a".repeat(24)}&start=2026-09-16&end=2026-09-16`, { headers }), env, context())).json();
-  assert.deepEqual(history.rows.map(row => row.time), times.slice(1, 3).map(time => Date.parse(time) / 1000));
+  assert.deepEqual(history.rows.map(row => row.time), times.slice(1, 3).reverse().map(time => Date.parse(time) / 1000));
 });
 
 test("read API is fail-closed and never exposes an arbitrary SQL endpoint", async () => {
@@ -256,8 +256,8 @@ test("lazy report plans preserve full-report values while skipping unopened tabs
     for (const [view, fields] of Object.entries(plans)) {
       const part = await get(view, { excludePersonal });
       assert.equal(calls.at(-1), fields.length, view);
-      assert.equal(part.queryUsage.queryCount, fields.length + (["overview", "papers"].includes(view) ? 1 : 0));
-      assert.equal(part.queryUsage.rowsRead, ["overview", "papers"].includes(view) ? null : fields.length * 10);
+      assert.equal(part.queryUsage.queryCount, fields.length + (["summary", "overview", "papers"].includes(view) ? 1 : 0));
+      assert.equal(part.queryUsage.rowsRead, ["summary", "overview", "papers"].includes(view) ? null : fields.length * 10);
       assert.equal(part.breakdowns, undefined);
       for (const field of fields) assert.deepEqual(part[field], field === "items" ? full.items.filter(row => row.section === (view === "outbound" ? "outbound" : "main")) : full[field], `${view}:${field}`);
     }

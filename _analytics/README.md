@@ -88,7 +88,7 @@ homepage. Profiles separately show PDF reading time, homepage time and downloads
 plus per-view measurements. Historical views show Not measured. A history item
 opened before the selected period can appear as Continued for reading within it,
 without incrementing the period's view count. Users show short Most recent page
-labels; bot scores remain available in profiles/history. Visible Users/profile
+labels; bot scores are no longer collected or displayed. Visible Users/profile
 views refresh once per minute; hidden tabs do not poll.
 
 The real generic PDF.js release and licenses are in `viewer-assets/` and deployed
@@ -102,12 +102,9 @@ disabled. See `PDF-VIEWER-CONTRACT.md` for the browser/Worker protocol.
 ## Own Visits And Distinct Browsers
 
 Migration `0008_client_metadata.sql` adds OS family (from the request user agent)
-and nullable `bot_score` (only the edge's `cf.botManagement.score`, integer 1-99).
-Missing scores are not zero and are never inferred from the existing UA bot flag.
-Numerical scores require Cloudflare Enterprise Bot Management; no plan change is
-made here. Browser/device reports also group by OS, and user profiles/histories
-expose the latest/per-event values. Neither field is backfilled for older events.
-https://developers.cloudflare.com/bots/plans/bm-subscription/
+and a legacy nullable `bot_score` column. New writes leave that column null, and
+reports no longer expose bot scores. Existing stored scores are not deleted.
+Browser/device reports group by OS; existing user-agent bot filtering is unchanged.
 
 Migration `0007_pdf_duplicates.sql` retains raw retrieval rows with `duplicate_of`
 pointing to the counted request. A single atomic INSERT decides this at collection
@@ -191,14 +188,20 @@ The report endpoint accepts scoped `view` values: `summary`, `overview`, `papers
 `outbound`, `geography`, `sources`, `devices`, `states`, `counties`, `countries`, and
 `detail` (requiring a bound `section=main|outbound` and `name`). These execute only
 their named query plans. Omitted `view` or `view=all` retains the complete report
-for older clients and explicit CSV export. Existing `view=users` is unchanged.
-Initial Overview and the default state map use four SQL queries total instead of
-nineteen; tab/map switches and destination details fetch on demand. All queries
+for older clients and explicit CSV export. `view=users` lists paginated visitors;
+`view=live` selects active reading sessions checked in within 315 seconds. Overview
+falls back to the three most recent users if none are live. Optional `page=/...`
+scopes aggregates and reading summaries to a canonical page path; Users then
+selects the cohort that viewed it while retaining each user's full-period history.
+Migration `0012_page_filter.sql` adds page/time and active-session indexes.
+Tab/map switches and destination details fetch on demand. All queries
 preserve date, personal, bot, duplicate and distinct-browser semantics.
 
 Migration `0010_headline_summaries.sql` maintains hourly event counters and
 visitor memberships with atomic SQLite triggers. `view=summary` reads these
-compact tables, not raw events. Exact distinct counts deduplicate visitor hashes
+compact tables for unfiltered-page counts, plus reading-hour summaries for the
+reading/download headline. Page-filtered counts use the indexed events table.
+Exact distinct counts deduplicate visitor hashes
 across the selected range; hourly/daily distinct counts are never added together.
 Pacific midnight aligns with hourly UTC buckets even across daylight saving time.
 The personal-browser registry is applied at read time, so marking a browser still
@@ -229,9 +232,9 @@ including outbound destinations, without summing distinct counts across regions.
 Both retain existing personal, bot, date and PDF-duplicate filters.
 
 The Users list is newest-first with 15 users per page; individual histories retain
-100 events per page and chronological order. Responses include `limit` so clients
-can navigate backward correctly. The dashboard's red Live indicator means activity
-within the past 20 minutes, not an open connection or verified human presence.
+100 events per page, newest first. Responses include `limit` so clients
+can navigate backward correctly. The red Live indicator uses active reading
+check-ins within five minutes plus 15 seconds of tolerance, not recent view counts.
 
 All date filters and daily buckets use `America/Los_Angeles` (Pacific midnight),
 with daylight saving time handled by Intl. Timestamps remain stored as UTC epoch
@@ -244,9 +247,11 @@ when changing public paper titles or links; its tests verify titles and local as
 Unlisted PDFs with activity also appear under their paths. Selecting a page, paper,
 CV, or outbound destination opens a right-side panel with country/region, inbound
 source, browser, device, and available campaign aggregates for that item and period.
-The time chart has its own **Traffic plot** tab. Papers & CV includes a views/users
-bar chart with independently toggleable labels; Geography includes a U.S. state
-map and state totals. The wide detail panel supports individual browser histories
+Tabs are Overview, Papers & CV, Users, Geography, Inbound, Outbound, Browsers.
+Overview includes live/recent users, a single-series paper chart (views, distinct
+users, reading hours or downloads), and Geography with states as the default.
+Alaska/Hawaii share the composite USA map. There is no Traffic plot tab or state
+totals dropdown. A shared page selector applies across tabs and CSV. The wide detail panel supports individual browser histories
 in the **Users** tab. Marked personal browsers display **You** in a distinct color.
 Geography, inbound sources, and browser/device tables separate webpage views,
 PDF requests, and outbound clicks into three count columns.

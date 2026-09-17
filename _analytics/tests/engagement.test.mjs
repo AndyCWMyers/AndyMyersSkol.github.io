@@ -56,6 +56,81 @@ async function report(DB, search) {
   return response.json();
 }
 
+test("page filters scope every aggregate while user cohorts retain full histories", async () => {
+  const { DB, db } = database();
+  const insert = db.prepare("INSERT INTO events(id,occurred_at,kind,path,target,visitor_hash,country,region,city,browser,device,referrer_status,is_personal) VALUES(?,?,?,?,?,?,'US','CA','Stanford','Chrome','Desktop','direct',?)");
+  for (const [id, kind, path, hash, personal] of [
+    ["a-pdf", "pdf_request", PDF, visitor, 0], ["a-home", "page_view", "/index.html", visitor, 0],
+    ["a-click", "outbound_click", PDF, visitor, 0], ["b-home", "page_view", "/", "b".repeat(64), 0],
+    ["own", "pdf_request", PDF, "c".repeat(64), 1],
+  ]) insert.run(id, midnight + 10, kind, path, "https://example.com/article", hash, personal);
+  const suffix = `start=2026-09-17&end=2026-09-17&page=${encodeURIComponent(PDF)}`;
+  const summary = await report(DB, `view=summary&${suffix}`);
+  assert.equal(summary.page, PDF);
+  assert.deepEqual(summary.totals.map(row => [row.kind, row.count]), [["outbound_click", 1], ["pdf_request", 1]]);
+  for (const view of ["overview", "papers"]) {
+    const result = await report(DB, `view=${view}&${suffix}`);
+    assert.deepEqual(result.items.map(row => [row.name, row.count]), [[PDF, 1]]);
+  }
+  for (const [view, key] of [["geography", "countries"], ["sources", "referrers"], ["devices", "devices"]]) {
+    const result = await report(DB, `view=${view}&${suffix}`);
+    assert.equal(result[key].reduce((n, row) => n + row.count, 0), 2, view);
+  }
+  for (const [view, key] of [["states", "states"], ["countries", "countryViews"], ["counties", "countyViews"]]) {
+    const result = await report(DB, `view=${view}&${suffix}`);
+    assert.equal(result[key].reduce((n, row) => n + row.count, 0), 1, view);
+  }
+  const detail = await report(DB, `view=detail&section=main&name=${encodeURIComponent(PDF)}&${suffix}`);
+  assert.equal(detail.items[0].count, 1);
+  const outbound = await report(DB, `view=outbound&${suffix}`);
+  assert.equal(outbound.items[0].count, 1);
+  const users = await report(DB, `view=users&${suffix}`);
+  assert.equal(users.rows.length, 1);
+  assert.equal(users.rows[0].views, 2);
+  const history = await report(DB, `view=users&user=${visitor.slice(0,24)}&${suffix}`);
+  assert.equal(history.rows.length, 3);
+  assert.ok(history.rows.some(row => row.path === "/"));
+  assert.equal((await report(DB, `view=users&user=${"b".repeat(24)}&${suffix}`)).rows.length, 0);
+  assert.equal((await report(DB, `view=users&excludePersonal=0&${suffix}`)).rows.length, 2);
+  const homepage = await report(DB, "view=summary&start=2026-09-17&end=2026-09-17&page=%2F");
+  assert.equal(homepage.totals[0].count, 2);
+  const plan = db.prepare("EXPLAIN QUERY PLAN SELECT id FROM events WHERE CASE WHEN path IN ('/index','/index.html') THEN '/' ELSE path END = ? AND occurred_at >= ? AND occurred_at < ?").all(PDF, midnight, midnight + 86400);
+  assert.ok(plan.some(row => row.detail.includes("events_page_time")));
+});
+
+test("live users require a current active check-in and respect page and personal filters", async () => {
+  const { DB, db } = database(), current = Math.floor(Date.now() / 1000);
+  const insert = db.prepare("INSERT INTO events(id,occurred_at,kind,path,visitor_hash,is_personal) VALUES(?,?,'pdf_request',?,?,?)");
+  for (const [id, hash, path, age, active, personal] of [
+    ["live-a", visitor, PDF, 20, 1, 0], ["paused", "b".repeat(64), PDF, 20, 0, 0],
+    ["expired", "c".repeat(64), PDF, 316, 1, 0], ["host", "d".repeat(64), PDF, 20, 1, 1],
+    ["other", "e".repeat(64), "/other.pdf", 20, 1, 0],
+  ]) {
+    insert.run(id, current - 600, path, hash, personal);
+    await startReading(DB, id, hash);
+    db.prepare("UPDATE reading_sessions SET last_seen=?, active=? WHERE id=?").run(current - age, active, id);
+  }
+  assert.equal((await report(DB, "view=live")).rows.length, 2);
+  const suffix = `page=${encodeURIComponent(PDF)}`;
+  assert.deepEqual((await report(DB, `view=live&${suffix}`)).rows.map(row => row.id), [visitor.slice(0,24)]);
+  assert.equal((await report(DB, `view=live&excludePersonal=0&${suffix}`)).rows.length, 2);
+  db.exec("UPDATE reading_sessions SET active=0");
+  assert.equal((await report(DB, `view=live&${suffix}`)).rows.length, 0);
+  assert.equal((await report(DB, `view=users&${suffix}`)).rows.length, 3);
+});
+
+test("headline engagement includes homepage time and honors page and personal filters", async () => {
+  const { DB, db } = database();
+  const pdf = await session(db, DB), home = await session(db, DB, { path: "/", kind: "page_view" }), own = await session(db, DB, { personal: 1 });
+  await saveReading(DB, snapshot(pdf), visitor, now);
+  await saveReading(DB, snapshot(home, { downloads: 0, hours: [{ hour: midnight, milliseconds: 300000, downloads: 0 }] }), visitor, now);
+  await saveReading(DB, snapshot(own), visitor, now);
+  const suffix = "start=2026-09-17&end=2026-09-17";
+  assert.deepEqual((await report(DB, `view=summary&${suffix}`)).engagement, { readingSeconds: 480, downloads: 1 });
+  assert.deepEqual((await report(DB, `view=summary&excludePersonal=0&${suffix}`)).engagement, { readingSeconds: 660, downloads: 2 });
+  assert.deepEqual((await report(DB, `view=summary&page=${encodeURIComponent(PDF)}&${suffix}`)).engagement, { readingSeconds: 180, downloads: 1 });
+});
+
 test("cumulative check-ins are idempotent, owner-bound and do not add views", async () => {
   const { DB, db } = database(), id = await session(db, DB);
   const body = snapshot(id);

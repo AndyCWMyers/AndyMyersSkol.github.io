@@ -85,7 +85,6 @@ function metadata(request) {
   const referrerStatus = referrer ? "known" : request.headers.has("Referer") ? "unknown" : "direct";
   const campaign = (key) => (url.searchParams.get(key) || "").replace(/[^a-zA-Z0-9_. -]/g, "").slice(0, 100);
   return { ...info, ...estimatedCounty(cf), referrer, referrerStatus, country: String(cf.country || "").slice(0, 2), region: String(cf.regionCode || "").slice(0, 20),
-    bot_score: Number.isInteger(cf.botManagement?.score) && cf.botManagement.score >= 1 && cf.botManagement.score <= 99 ? cf.botManagement.score : null,
     city: typeof cf.city === "string" ? cf.city.replace(/[\u0000-\u001f\u007f]/g, "").trim().slice(0, 100) : "",
     source: campaign("utm_source"), medium: campaign("utm_medium"), campaign: campaign("utm_campaign") };
 }
@@ -113,7 +112,7 @@ async function record(request, env, event) {
         ORDER BY occurred_at, rowid LIMIT 1
       ), '') ELSE '' END)`)
     .bind(id, now, event.kind, event.path, event.target || "",
-      m.referrer, m.source, m.medium, m.campaign, m.country, m.region, m.browser, m.device, m.bot, event.status || 200, visitor, m.referrerStatus, personalBrowser(request) ? 1 : 0, m.county, m.county_fips, connectingIp(request), m.city, m.os, m.bot_score,
+      m.referrer, m.source, m.medium, m.campaign, m.country, m.region, m.browser, m.device, m.bot, event.status || 200, visitor, m.referrerStatus, personalBrowser(request) ? 1 : 0, m.county, m.county_fips, connectingIp(request), m.city, m.os, null,
       event.viewer ? '' : event.kind, visitor, visitor, event.path, now - 5, now).run();
   if ((inserted.meta?.changes ?? inserted.changes) === 0) return false;
   if (event.kind !== 'pdf_request') return true;
@@ -199,20 +198,27 @@ async function report(request, env) {
   const filter = url.searchParams.get("excludePersonal") ?? "1";
   if (!["0", "1"].includes(filter)) return json({ error: "Invalid personal-activity filter" }, 400);
   const excludePersonal = filter === "1";
-  const period = "occurred_at >= ? AND occurred_at < ? AND duplicate_of = ''";
+  const page = url.searchParams.get("page") || "";
+  if (page && (cleanPath(page) !== page || /[\\\u0000-\u0020]/.test(page))) return json({ error: "Invalid page filter" }, 400);
+  const period = `occurred_at >= ? AND occurred_at < ? AND duplicate_of = ''${page ? " AND CASE WHEN path IN ('/index','/index.html') THEN '/' ELSE path END = ?3" : ""}`;
   const personal = "(is_personal = 1 OR visitor_hash IN (SELECT visitor_hash FROM personal_visitors))";
   const where = `${period}${excludePersonal ? ` AND NOT ${personal}` : ""}`;
-  if (url.searchParams.get("view") === "users") {
-    const value = await userReport(env.DB, url, dates, personal, excludePersonal);
+  if (["users", "live"].includes(url.searchParams.get("view"))) {
+    const value = await userReport(env.DB, url, dates, personal, excludePersonal, page);
     return json(value, value.error ? 400 : 200);
   }
   const view = url.searchParams.get("view") || "all";
   if (!Object.hasOwn(REPORT_PLANS, view)) return json({ error: "Invalid report view" }, 400);
-  if (view === "summary") {
+  if (view === "summary" && !page) {
     const summary = await headlineSummary(env.DB, dates, excludePersonal);
+    const reading = await readingItems(env.DB, dates, excludePersonal);
+    const engagement = reading.rows.reduce((total, row) => ({ readingSeconds: total.readingSeconds + row.readingSeconds, downloads: total.downloads + row.downloads }), { readingSeconds: 0, downloads: 0 });
     return json({ generatedAt: new Date().toISOString(), timeZone: TIME_ZONE, start: dates.start, end: dates.end,
-      excludePersonal, documents, gaPropertyId: "465165532", gaMeasurementId: env.GA_MEASUREMENT_ID,
-      gaPdfForwarding: Boolean(env.GA_API_SECRET && env.GA_MEASUREMENT_ID), view, ...summary });
+      excludePersonal, page, documents, engagement, gaPropertyId: "465165532", gaMeasurementId: env.GA_MEASUREMENT_ID,
+      gaPdfForwarding: Boolean(env.GA_API_SECRET && env.GA_MEASUREMENT_ID), view, ...summary,
+      queryUsage: { ...summary.queryUsage, queryCount: summary.queryUsage.queryCount + 1,
+        rowsRead: summary.queryUsage.rowsRead === null || reading.measured[1].meta?.rows_read == null ? null : summary.queryUsage.rowsRead + reading.measured[1].meta.rows_read,
+        queries: [...summary.queryUsage.queries, ...queryUsage([reading.measured]).queries] } });
   }
   const section = url.searchParams.get("section") || "", name = url.searchParams.get("name") || "";
   if (view === "detail" && (!["main", "outbound"].includes(section) || !name || name.length > 2048)) return json({ error: "Invalid detail query" }, 400);
@@ -220,7 +226,7 @@ async function report(request, env) {
   const scope = view === "detail" ? section : view === "outbound" ? "outbound" : ["papers", "overview"].includes(view) ? "main" : "";
   const itemFilter = scope === "outbound" ? " AND kind = 'outbound_click'" : scope === "main" ? " AND kind IN ('page_view','pdf_request')" : "";
   const detailFilter = view === "detail" ? ` AND ${section === "outbound" ? "target" : mainPath} = ?` : "";
-  const query = (sql) => ({ sql, params: [dates.from, dates.until, ...(view === "detail" && sql.startsWith("WITH activity AS") ? [name] : [])] });
+  const query = (sql) => ({ sql, params: [dates.from, dates.until, ...(page ? [page] : []), ...(view === "detail" && sql.startsWith("WITH activity AS") ? [name] : [])] });
   const activity = `WITH activity AS (
     SELECT *, CASE WHEN kind = 'outbound_click' THEN 'outbound' ELSE 'main' END AS section,
       CASE WHEN kind = 'outbound_click' THEN target WHEN path IN ('/index.html', '/index') THEN '/' ELSE path END AS name
@@ -280,8 +286,11 @@ async function report(request, env) {
   const measuredQueries = selected.map((entry, index) => [entry.name, executed[index]]);
   const results = queries.map(() => ({ results: [] }));
   selected.forEach((entry, index) => { results[entry.index] = executed[index]; });
-  if (["all", "overview", "papers"].includes(view) || (view === "detail" && section === "main")) {
-    const reading = await readingItems(env.DB, dates, excludePersonal, view === "detail" ? name : "");
+  let engagement;
+  if (["all", "summary", "overview", "papers"].includes(view) || (view === "detail" && section === "main")) {
+    const reading = await readingItems(env.DB, dates, excludePersonal, view === "detail" ? name : page);
+    if (page && view === "detail" && name !== page) reading.rows = [];
+    engagement = reading.rows.reduce((total, row) => ({ readingSeconds: total.readingSeconds + row.readingSeconds, downloads: total.downloads + row.downloads }), { readingSeconds: 0, downloads: 0 });
     results[10].results = addReadingItems(results[10].results, reading.rows);
     measuredQueries.push(reading.measured);
   }
@@ -291,7 +300,7 @@ async function report(request, env) {
     ...Object.fromEntries(keys.map((key, i) => [key, results[i].results])),
     pdfVisitors: results[8].results[0], pdfVisitorsByPath: results[9].results,
     documents, items: results[10].results, breakdowns: [...results[11].results, ...results[16].results],
-    excludePersonal, personalActivity: results[12].results[0],
+    excludePersonal, page, engagement, personalActivity: results[12].results[0],
     states: results[13].results,
     counties: results[14].results, countyViews: results[15].results,
     cities: results[17].results,
@@ -300,7 +309,7 @@ async function report(request, env) {
     notes: ["PDF requests are retrieval starts, not confirmed reads. Same-browser/same-PDF retrievals within five seconds are counted once. Nonzero byte ranges are excluded; unidentified retries can still count twice.",
       "Distinct visitors are estimated browsers, not identified people, using a random 30-day cookie. Only its hash is stored in D1. Old requests have no visitor identifier and cannot be deduplicated.",
       "Marked personal activity can be filtered from all report aggregates. Privacy opt-outs are never recorded. IP addresses are retained privately and shown only in authenticated user profiles; no fingerprints are created."] };
-  const fields = new Set(["generatedAt", "timeZone", "start", "end", "excludePersonal", "documents", "gaPropertyId", "gaMeasurementId", "gaPdfForwarding", ...REPORT_PLANS[view]]);
+  const fields = new Set(["generatedAt", "timeZone", "start", "end", "excludePersonal", "page", "engagement", "documents", "gaPropertyId", "gaMeasurementId", "gaPdfForwarding", ...REPORT_PLANS[view]]);
   return json({ ...(view === "all" ? value : Object.fromEntries(Object.entries(value).filter(([key]) => fields.has(key)))),
     view, ...(view === "detail" ? { section, name } : {}),
     queryUsage: queryUsage(measuredQueries) });

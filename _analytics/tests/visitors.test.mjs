@@ -223,7 +223,7 @@ test("historical duplicate correction flags only matching same-second 200/304 pa
   assert.deepEqual(db.prepare("SELECT id, duplicate_of FROM events WHERE duplicate_of != ''").all().map(row => ({ ...row })), [{ id: "retry", duplicate_of: "original" }]);
 });
 
-test("OS reporting separates matching browsers and latest bot score remains null when unavailable", async () => {
+test("OS reporting separates matching browsers and omits legacy bot scores", async () => {
   const s = setup(), now = Math.floor(Date.now() / 1000), hash = await visitorHash(A);
   const insert = s.db.prepare("INSERT INTO events(id,occurred_at,kind,path,visitor_hash,browser,device,os,bot_score) VALUES(?,?,'page_view','/',?,'Chrome','Desktop',?,?)");
   insert.run("mac", now - 1, hash, "macOS", 99);
@@ -234,9 +234,9 @@ test("OS reporting separates matching browsers and latest bot score remains null
   assert.deepEqual(report.breakdowns.filter(row => row.dimension === "devices").map(row => row.detail).sort(), ["Windows", "macOS"]);
   const users = await get("?view=users");
   assert.equal(users.rows[0].os, "Windows");
-  assert.equal(users.rows[0].bot_score, null);
+  assert.equal(users.rows[0].bot_score, undefined);
   const history = await get(`?view=users&user=${hash.slice(0, 24)}`);
-  assert.deepEqual(history.rows.map(row => row.bot_score), [99, null]);
+  assert.ok(history.rows.every(row => !("bot_score" in row)));
 });
 
 test("headline distinct counts deduplicate across destinations and respect filters for each traffic kind", async () => {
@@ -450,7 +450,7 @@ test("private users and chronological histories paginate, filter personal activi
   assert.equal(first.nextOffset, 100);
   assert.equal(second.rows.length, 3);
   assert.equal(second.nextOffset, null);
-  assert.deepEqual([...first.rows, ...second.rows].map(row => row.path), Array.from({ length: 103 }, (_, i) => `/paper-${i}.pdf`));
+  assert.deepEqual([...first.rows, ...second.rows].map(row => row.path), Array.from({ length: 103 }, (_, i) => `/paper-${102 - i}.pdf`));
   assert.equal(first.rows[0].referrer, "__direct__");
   for (const suffix of ["&user=bad", "&offset=-1", "&offset=1.5", "&offset=10000000", "&excludePersonal=bad"]) {
     assert.equal((await s.request(`/__analytics/report?view=users${suffix}`, { Authorization: `Bearer ${SECRET}` })).status, 400);
@@ -459,7 +459,7 @@ test("private users and chronological histories paginate, filter personal activi
   assert.deepEqual(report.states[0], { name: "CA", count: 104, visitors: 1, identifiedRequests: 103, unidentifiedRequests: 1 });
 });
 
-test("user list pagination includes every identity once and tie timestamps keep insertion order", async () => {
+test("user list pagination includes every identity once and history ties use newest insertion first", async () => {
   const s = setup(), now = Math.floor(Date.now() / 1000);
   const insert = s.db.prepare("INSERT INTO events(id,occurred_at,kind,path,visitor_hash) VALUES(?,?,'page_view',?,?)");
   for (let i = 1; i <= 101; i++) insert.run(String(i), now, "/", i.toString(16).padStart(64, "0").split("").reverse().join(""));
@@ -477,7 +477,7 @@ test("user list pagination includes every identity once and tie timestamps keep 
   const hash = "f".repeat(64);
   insert.run("z-first", now, "/first", hash); insert.run("a-second", now, "/second", hash);
   const history = await (await s.request(`/__analytics/report?view=users&user=${hash.slice(0, 24)}`, { Authorization: `Bearer ${SECRET}` })).json();
-  assert.deepEqual(history.rows.map(row => row.path), ["/first", "/second"]);
+  assert.deepEqual(history.rows.map(row => row.path), ["/second", "/first"]);
 });
 
 test("country maps deduplicate across regions and papers, with destination and personal filters", async () => {
@@ -561,7 +561,8 @@ test("city reports preserve state/country distinctions, missing history and pers
   assert.equal((await get("?view=users")).rows[0].city, "Springfield");
   const history = await get(`?view=users&user=${a.slice(0,24)}`);
   assert.ok(history.rows.every(r => r.city === "Springfield"));
-  assert.equal(history.rows[0].region, "IL");
+  assert.equal(history.rows[0].region, "MA");
+  assert.equal(history.rows.at(-1).region, "IL");
 });
 
 test("city migration leaves previous events unchanged and unlocated", () => {

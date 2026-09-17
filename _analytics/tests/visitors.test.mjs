@@ -125,8 +125,7 @@ test("homepage labels personal and regular traffic before loading GTM without ex
     vm.runInNewContext(tag, { window, document, navigator: {} });
     assert.equal(window["ga-disable-G-82ZD3DWY3B"], undefined);
     assert.equal(window.dataLayer.length, 2);
-    assert.equal(window.dataLayer[0][0], "set");
-    assert.equal(window.dataLayer[0][1].personal_activity, expected);
+    assert.equal(window.dataLayer[0].personal_activity, expected);
     assert.equal(window.dataLayer[1].event, "gtm.js");
     assert.equal(scripts[0].src, "https://www.googletagmanager.com/gtm.js?id=GTM-MSMBKM2K");
   }

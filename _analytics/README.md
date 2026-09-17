@@ -57,8 +57,11 @@ Chrome may have separate cookie stores: use the browser actually used for the si
 
 Personal activity is retained in D1 with `is_personal=1` and forwarded to GA4 with
 the event parameter `personal_activity=yes` (`no` for regular visitors). The homepage
-sets this parameter before GTM loads, covering its subsequent browser events;
-the Worker adds the same flag to PDF page views. GA4's event-scoped custom dimension
+pushes this value to the data layer before GTM loads. GTM's **Personal activity**
+variable reads `personal_activity` (Data Layer Version 2), and **Tag1 > Shared event
+settings** maps the event parameter `personal_activity` to `{{Personal activity}}`
+for subsequent browser events. The Worker adds the same flag to PDF page views.
+GA4's event-scoped custom dimension
 **Personal activity** maps to `personal_activity`. Use report filters/comparisons,
 not an active exclusion data filter: active data filters discard events permanently.
 The existing Internal Traffic data filter was verified as **Testing**, not Active.

@@ -12,8 +12,7 @@
 <script>(function(w,d,s,l,i){
 if(d.cookie.split(';').some(function(c){return c.trim()==='__Host-acw_ignore=1';}) || navigator.doNotTrack==='1' || navigator.globalPrivacyControl){w['ga-disable-G-82ZD3DWY3B']=true;return;}
 w[l]=w[l]||[];
-function tag(){w[l].push(arguments);}
-tag('set',{'personal_activity':d.cookie.split(';').some(function(c){return c.trim()==='__Host-acw_personal=1';})?'yes':'no'});
+w[l].push({'personal_activity':d.cookie.split(';').some(function(c){return c.trim()==='__Host-acw_personal=1';})?'yes':'no'});
 w[l].push({'gtm.start':
 new Date().getTime(),event:'gtm.js'});var f=d.getElementsByTagName(s)[0],
 j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src=

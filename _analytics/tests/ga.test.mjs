@@ -7,7 +7,7 @@ import { pdfIdentity, pdfPayload } from "../src/ga.mjs";
 
 const URL = "https://www.andrewcwmyers.com/paper.pdf?private=secret";
 const NOW = 1800000000;
-const info = { device: "Desktop", browser: "Safari", country: "US", region: "CA", referrer: "example.org", source: "newsletter", medium: "email", campaign: "paper" };
+const info = { device: "Desktop", browser: "Safari", country: "US", region: "CA", referrer: "example.org", source: "newsletter", medium: "email", campaign: "paper", ip_address: "203.0.113.5", county: "Santa Clara County", county_fips: "06085" };
 
 function setup(headers = {}, status = 200, fail = false) {
   const pending = [], sent = [];
@@ -40,6 +40,8 @@ test("GA payload reports coarse location/device but no IP, arbitrary query, or i
   assert.equal(payload.events[0].params.personal_activity, "no");
   assert.equal(payload.events[0].params.engagement_time_msec, undefined);
   assert.equal(payload.ip_override, undefined);
+  assert.equal(JSON.stringify(payload).includes("203.0.113.5"), false);
+  assert.equal(JSON.stringify(payload).includes("Santa Clara"), false);
   assert.equal(payload.consent.ad_personalization, "DENIED");
 });
 

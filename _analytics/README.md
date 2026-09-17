@@ -139,7 +139,8 @@ The same first-party visitor identity now covers visible page views and outbound
 clicks, not only PDF requests. HTML responses establish it before the browser script
 runs; a collector response also sets it for previously cached pages. Only the
 private Users view returns pseudonymous browser labels, never raw cookies, full
-hashes, or IPs. Historic missing identities remain unknown. Histories are fetched
+hashes. IPs are available only in authenticated individual profiles, not aggregate
+reports or the user listing. Historic missing identities remain unknown. Histories are fetched
 on demand through the host and are not saved in the browser's offline report cache.
 
 Inbound sources distinguish **Direct** (a captured request with no referrer supplied)
@@ -152,11 +153,68 @@ the sources of unclassified events. Detail tables show at most 50 groups per dim
 Migration `0003_personal_activity.sql` adds personal-event classification and a
 hashed browser-identity registry without guessing the owner of historic events.
 
-No raw IPs or browser fingerprints are stored. IPs are used only by Cloudflare's
-ephemeral rate limiter. DNT/GPC opt-outs are honored by this collector. Browser
+At the owner's request, raw IP addresses are retained prospectively in private D1
+and shown in authenticated individual user profiles. No browser fingerprints are
+created, and IP addresses do not determine visitor identity or personal filters.
+DNT/GPC opt-outs are honored by this collector. Browser
 and bot classifications are coarse heuristics, not verified human identities.
-Referrers are domains only; geographic data is country/region. Only UTM marketing
+Referrers are domains only; geographic data is country/region and an estimated U.S.
+county (or county equivalent). Only UTM marketing
 tags are retained from incoming query strings. Do not put personal data in UTMs.
+
+### Estimated Counties
+
+Migration `0004_county_geography.sql` adds `county` and `county_fips` without
+backfilling historic visits. New events use Cloudflare's city-level IP coordinates
+to find a containing Census county using Turf's point-in-polygon implementation.
+Only edge metadata is trusted, not submitted browser location fields. Coordinates,
+city names and postal codes are not retained or sent to a lookup service. IP
+retention is separate, as described below.
+This applies to page/PDF requests and browser page/click events, with the existing
+opt-outs and personal filters unchanged. County data is not added to GA4.
+
+No county is assigned when city/coordinates are missing, the state conflicts,
+the point is outside the polygons, or more than one polygon matches. There is no
+nearest-county fallback. These are IP-location estimates, not GPS or residence;
+VPNs, mobile networks and simplified boundaries can mislocate visitors. Historic
+and unmatched U.S. visits remain explicitly unknown. International visits keep
+country/region only. County equivalents include DC, Alaska boroughs and Connecticut
+planning regions; Puerto Rico municipalities are supported.
+
+Boundaries: U.S. Census Bureau 2025 Cartographic Boundary counties, 1:5,000,000:
+https://www2.census.gov/geo/tiger/GENZ2025/shp/cb_2025_us_county_5m.zip
+https://www.census.gov/geographies/mapping-files/2025/geo/carto-boundary-file.html
+Download and unzip the archive; regenerate with
+`node scripts/build-counties.mjs /path/to/cb_2025_us_county_5m.shp`.
+The generator retains official GEOIDs/names/states and rounds coordinates to five
+decimals; it does not further simplify shapes. Copy the generated `src/us-counties.json`
+to the Command Center's Website Analytics directory, then build that app. This is
+public boundary data, not visitor data. Shapefile is a development-only converter;
+Turf is bundled in the Worker. No paid geocoding API is required; existing Worker
+and D1 usage limits still apply.
+
+The map's States/Counties switch shows view or distinct-viewer totals. County
+traffic tables separate page views, PDF requests and outbound clicks. County
+distinct counts deduplicate within county across all viewed documents, not by
+summing paper counts. Unknown counties appear in tables but cannot be mapped.
+Per-item panels, individual browser histories and CSV exports include counties.
+
+### Private IP History
+
+Migration `0005_ip_address.sql` adds `ip_address` prospectively. Only the validated
+Cloudflare `CF-Connecting-IP` header is used (or real IPv6 in Pseudo IPv4 overwrite
+mode), never browser JSON, X-Forwarded-For, or X-Real-IP. Addresses identify network
+connections, not people; VPNs/shared connections and Worker proxy requests can
+represent intermediaries. Historical blank IPs stay unrecorded.
+
+The bearer-protected individual profile returns every distinct address in its
+selected Pacific date range, with first/last seen and event counts across the full
+filtered history, independent of its 100-event page. Each history event also shows
+its IP. Bot, privacy and personal filters still apply. Aggregate reports, CSVs and
+user lists omit IPs. Profiles are fetched on demand, not offline-cached. Addresses
+are not sent to GA4, geocoders, logs or Git, and are not used to merge identities.
+No automatic IP deletion is configured; review retention and the site's privacy
+disclosures to reflect this additional collection.
 
 Existing GTM/GA4 tagging remains in place. Confirmed live property: `465165532`,
 stream: `9879831300`, measurement ID: `G-82ZD3DWY3B`. The Worker forwards non-bot,

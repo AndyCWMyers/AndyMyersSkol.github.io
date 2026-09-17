@@ -18,6 +18,8 @@ function setup() {
   db.exec(readFileSync(new URL("../migrations/0001_pdf_visitors.sql", import.meta.url), "utf8"));
   db.exec(readFileSync(new URL("../migrations/0002_referrer_status.sql", import.meta.url), "utf8"));
   db.exec(readFileSync(new URL("../migrations/0003_personal_activity.sql", import.meta.url), "utf8"));
+  db.exec(readFileSync(new URL("../migrations/0004_county_geography.sql", import.meta.url), "utf8"));
+  db.exec(readFileSync(new URL("../migrations/0005_ip_address.sql", import.meta.url), "utf8"));
   const pending = [], ga = [];
   const prepare = sql => ({ bind: (...params) => ({ run: async () => db.prepare(sql).run(...params), all: async () => ({ results: db.prepare(sql).all(...params) }) }) });
   const env = { DB: { prepare, batch: queries => Promise.all(queries.map(query => query.all())) }, READ_TOKEN: SECRET,
@@ -374,6 +376,74 @@ test("user list pagination includes every identity once and tie timestamps keep 
   insert.run("z-first", now, "/first", hash); insert.run("a-second", now, "/second", hash);
   const history = await (await s.request(`/__analytics/report?view=users&user=${hash.slice(0, 24)}`, { Authorization: `Bearer ${SECRET}` })).json();
   assert.deepEqual(history.rows.map(row => row.path), ["/first", "/second"]);
+});
+
+test("counties preserve unknowns, deduplicate across papers, and respect all filters and user histories", async () => {
+  const s = setup(), now = Math.floor(Date.now() / 1000), a = await visitorHash(A), b = await visitorHash(B);
+  const insert = s.db.prepare("INSERT INTO events(id,occurred_at,kind,path,visitor_hash,country,region,county,county_fips,is_personal,bot) VALUES(?,?,?, ?,?,'US','CA',?,?,?,?)");
+  for (const [id, kind, path, visitor, county, fips, personal, bot, time] of [
+    ["pdf1", "pdf_request", "/a.pdf", a, "Santa Clara County", "06085", 0, 0, now - 2],
+    ["pdf2", "pdf_request", "/b.pdf", a, "Santa Clara County", "06085", 0, 0, now - 1],
+    ["page", "page_view", "/", a, "Santa Clara County", "06085", 0, 0, now],
+    ["click", "outbound_click", "/", a, "Santa Clara County", "06085", 0, 0, now],
+    ["old", "pdf_request", "/a.pdf", "", "", "", 0, 0, now],
+    ["own", "pdf_request", "/a.pdf", b, "Santa Clara County", "06085", 0, 0, now],
+    ["ownflag", "pdf_request", "/a.pdf", "", "Santa Clara County", "06085", 1, 0, now],
+    ["bot", "pdf_request", "/a.pdf", a, "Santa Clara County", "06085", 0, 1, now],
+    ["duplicate", "pdf_click", "/a.pdf", a, "Santa Clara County", "06085", 0, 0, now],
+    ["outside", "pdf_request", "/a.pdf", a, "Santa Clara County", "06085", 0, 0, now - 400 * 86400],
+  ]) insert.run(id, time, kind, path, visitor, county, fips, personal, bot);
+  s.db.prepare("INSERT INTO personal_visitors(visitor_hash) VALUES(?)").run(b);
+  const report = async suffix => (await s.request(`/__analytics/report${suffix}`, { Authorization: `Bearer ${SECRET}` })).json();
+  const filtered = await report("");
+  assert.deepEqual(filtered.countyViews.find(r => r.name === "06085"), { name: "06085", county: "Santa Clara County", region: "CA", count: 3, visitors: 1, identifiedRequests: 3, unidentifiedRequests: 0 });
+  assert.equal(filtered.countyViews.find(r => r.name === "").count, 1);
+  assert.equal(filtered.counties.find(r => r.name === "06085" && r.kind === "outbound_click").count, 1);
+  assert.equal(filtered.breakdowns.find(r => r.name === "/a.pdf" && r.dimension === "counties" && r.value === "Santa Clara County").count, 1);
+  assert.equal((await report("?excludePersonal=0")).countyViews.find(r => r.name === "06085").count, 5);
+  assert.equal((await report("?view=users")).rows[0].county_fips, "06085");
+  const history = await report(`?view=users&user=${a.slice(0,24)}`);
+  assert.equal(history.rows.length, 4);
+  assert.ok(history.rows.every(r => r.county === "Santa Clara County"));
+});
+
+test("county migration does not invent historical counties or alter event counts", () => {
+  const db = new DatabaseSync(":memory:");
+  db.exec(readFileSync(new URL("../schema.sql", import.meta.url), "utf8"));
+  db.exec("INSERT INTO events(id,occurred_at,kind,path,country,region) VALUES('old',1,'page_view','/','US','CA')");
+  db.exec(readFileSync(new URL("../migrations/0004_county_geography.sql", import.meta.url), "utf8"));
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM events").get().n, 1);
+  assert.deepEqual({ ...db.prepare("SELECT county, county_fips FROM events").get() }, { county: "", county_fips: "" });
+});
+
+test("IP profiles include every address across pages, never other users, bots, excluded or out-of-period events", async () => {
+  const s = setup(), now = Math.floor(Date.now() / 1000), a = await visitorHash(A), b = await visitorHash(B);
+  const insert = s.db.prepare("INSERT INTO events(id,occurred_at,kind,path,visitor_hash,ip_address,is_personal,bot) VALUES(?,?,'page_view','/',?,?,?,?)");
+  for (let i = 0; i < 101; i++) insert.run(`normal-${i}`, now - 200 + i, a, "203.0.113.1", 0, 0);
+  insert.run("changed-network", now, a, "2001:db8::1", 0, 0);
+  insert.run("unknown-old", now - 300, a, "", 0, 0);
+  insert.run("other-user", now, b, "198.51.100.1", 0, 0);
+  insert.run("bot", now, a, "198.51.100.2", 0, 1);
+  insert.run("personal", now, a, "198.51.100.3", 1, 0);
+  insert.run("outside", now - 400 * 86400, a, "198.51.100.4", 0, 0);
+  const get = async suffix => (await s.request(`/__analytics/report${suffix}`, { Authorization: `Bearer ${SECRET}` })).json();
+  const path = `?view=users&user=${a.slice(0,24)}`;
+  const first = await get(path), next = await get(path + "&offset=100");
+  assert.deepEqual(first.addresses, next.addresses);
+  assert.deepEqual(first.addresses.map(r => r.address), ["2001:db8::1", "203.0.113.1"]);
+  assert.equal(first.addresses[1].events, 101);
+  assert.equal(first.addresses[1].firstSeen, now - 200);
+  assert.equal(first.unrecordedIpEvents, 1);
+  assert.equal(first.rows[1].ip_address, "203.0.113.1");
+  assert.equal((await get(path + "&excludePersonal=0")).addresses.length, 3);
+  for (const suffix of ["", "?view=users"]) {
+    const summary = JSON.stringify(await get(suffix));
+    assert.equal(summary.includes("203.0.113.1"), false);
+    assert.equal(summary.includes("ip_address"), false);
+  }
+  s.db.prepare("INSERT INTO personal_visitors(visitor_hash) VALUES(?)").run(a);
+  assert.deepEqual((await get(path)).addresses, []);
+  assert.equal((await s.request(`/__analytics/report${path}`)).status, 401);
 });
 
 test("do-not-record and privacy signals still override a personal marker", async () => {

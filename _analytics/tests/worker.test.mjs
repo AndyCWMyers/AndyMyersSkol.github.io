@@ -15,10 +15,12 @@ function database() {
   db.exec(readFileSync(new URL("../migrations/0001_pdf_visitors.sql", import.meta.url), "utf8"));
   db.exec(readFileSync(new URL("../migrations/0002_referrer_status.sql", import.meta.url), "utf8"));
   db.exec(readFileSync(new URL("../migrations/0003_personal_activity.sql", import.meta.url), "utf8"));
-  const prepare = (sql) => ({ bind: (...params) => ({
+  db.exec(readFileSync(new URL("../migrations/0004_county_geography.sql", import.meta.url), "utf8"));
+  db.exec(readFileSync(new URL("../migrations/0005_ip_address.sql", import.meta.url), "utf8"));
+  const prepare = (sql) => { assert.ok((sql.match(/UNION ALL/g) || []).length < 5, "D1 compound SELECT limit"); return ({ bind: (...params) => ({
     run: async () => db.prepare(sql).run(...params),
     all: async () => ({ results: db.prepare(sql).all(...params) }),
-  }) });
+  }) }); };
   return { db, DB: { prepare, batch: (queries) => Promise.all(queries.map(q => q.all())) } };
 }
 
@@ -28,6 +30,34 @@ function context() {
 }
 
 function request(path, init) { return new Request(ORIGIN + path, init); }
+
+test("county collection trusts only edge metadata and never stores coordinates or submitted geography", async () => {
+  const { DB, db } = database(), ctx = context();
+  const req = request("/__analytics/event", { method: "POST", headers: { Origin: ORIGIN }, body: JSON.stringify({ id: crypto.randomUUID(), kind: "page_view", path: "/", county: "Forged county", latitude: 0 }) });
+  Object.defineProperty(req, "cf", { value: { country: "US", regionCode: "CA", city: "Stanford", latitude: "37.4275", longitude: "-122.1697" } });
+  assert.equal((await worker.fetch(req, { DB }, ctx)).status, 204);
+  await ctx.finish();
+  const row = db.prepare("SELECT * FROM events").get();
+  assert.equal(row.county, "Santa Clara County");
+  assert.equal(row.county_fips, "06085");
+  assert.equal("latitude" in row || "longitude" in row || "ip" in row, false);
+  assert.equal(JSON.stringify(row).includes("37.4275"), false);
+});
+
+test("page and PDF events save edge IPs, never submitted JSON or forwarded headers", async () => {
+  const { DB, db } = database(), ctx = context();
+  const headers = { Origin: ORIGIN, "CF-Connecting-IP": "203.0.113.5", "X-Forwarded-For": "198.51.100.2" };
+  const body = JSON.stringify({ id: crypto.randomUUID(), kind: "page_view", path: "/", ip_address: "198.51.100.3" });
+  await worker.fetch(request("/__analytics/event", { method: "POST", headers, body }), { DB }, ctx);
+  await worker.fetch(request("/paper.pdf", { headers }), { DB, ORIGIN: { fetch: async () => new Response("%PDF", { headers: { "Content-Type": "application/pdf" } }) } }, ctx);
+  await ctx.finish();
+  assert.deepEqual(db.prepare("SELECT ip_address FROM events").all().map(r => r.ip_address), ["203.0.113.5", "203.0.113.5"]);
+  for (const privacy of [{ DNT: "1" }, { "Sec-GPC": "1" }, { Cookie: "__Host-acw_ignore=1" }]) {
+    await worker.fetch(request("/__analytics/event", { method: "POST", headers: { ...headers, ...privacy }, body }), { DB }, ctx);
+  }
+  await ctx.finish();
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM events").get().n, 2);
+});
 
 test("production fetch keeps its native receiver and enables fallback only for public content", async () => {
   const originalFetch = globalThis.fetch;

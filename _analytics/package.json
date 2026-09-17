@@ -8,5 +8,11 @@
     "deploy": "wrangler deploy",
     "dev": "wrangler dev"
   },
-  "devDependencies": { "wrangler": "4.133.0" }
+  "devDependencies": {
+    "shapefile": "0.6.6",
+    "wrangler": "4.133.0"
+  },
+  "dependencies": {
+    "@turf/boolean-point-in-polygon": "7.3.4"
+  }
 }

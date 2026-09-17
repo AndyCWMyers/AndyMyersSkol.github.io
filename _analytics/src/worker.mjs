@@ -77,6 +77,7 @@ function metadata(request) {
   const referrerStatus = referrer ? "known" : request.headers.has("Referer") ? "unknown" : "direct";
   const campaign = (key) => (url.searchParams.get(key) || "").replace(/[^a-zA-Z0-9_. -]/g, "").slice(0, 100);
   return { ...info, ...estimatedCounty(cf), referrer, referrerStatus, country: String(cf.country || "").slice(0, 2), region: String(cf.regionCode || "").slice(0, 20),
+    city: typeof cf.city === "string" ? cf.city.replace(/[\u0000-\u001f\u007f]/g, "").trim().slice(0, 100) : "",
     source: campaign("utm_source"), medium: campaign("utm_medium"), campaign: campaign("utm_campaign") };
 }
 
@@ -92,10 +93,10 @@ async function record(request, env, event) {
   const m = { ...metadata(request), ...event.attribution };
   const visitor = event.visitorId ? await visitorHash(event.visitorId) : "";
   await env.DB.prepare(`INSERT OR IGNORE INTO events
-    (id, occurred_at, kind, path, target, referrer, source, medium, campaign, country, region, browser, device, bot, status, visitor_hash, referrer_status, is_personal, county, county_fips, ip_address)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    (id, occurred_at, kind, path, target, referrer, source, medium, campaign, country, region, browser, device, bot, status, visitor_hash, referrer_status, is_personal, county, county_fips, ip_address, city)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
     .bind(event.id || crypto.randomUUID(), Math.floor(Date.now() / 1000), event.kind, event.path, event.target || "",
-      m.referrer, m.source, m.medium, m.campaign, m.country, m.region, m.browser, m.device, m.bot, event.status || 200, visitor, m.referrerStatus, personalBrowser(request) ? 1 : 0, m.county, m.county_fips, connectingIp(request)).run();
+      m.referrer, m.source, m.medium, m.campaign, m.country, m.region, m.browser, m.device, m.bot, event.status || 200, visitor, m.referrerStatus, personalBrowser(request) ? 1 : 0, m.county, m.county_fips, connectingIp(request), m.city).run();
 }
 
 function background(ctx, promise) {
@@ -197,13 +198,17 @@ async function report(request, env) {
     query(`SELECT region AS name, ${counts} FROM events WHERE ${where} AND bot = 0 AND country = 'US' AND kind IN ('page_view','pdf_request') GROUP BY region ORDER BY count DESC`),
     query(`SELECT county_fips AS name, county, region, kind, COUNT(*) AS count FROM events WHERE ${where} AND bot = 0 AND country IN ('US','PR') AND kind IN ('page_view','pdf_request','outbound_click') GROUP BY county_fips, county, region, kind ORDER BY count DESC`),
     query(`SELECT county_fips AS name, county, region, ${counts} FROM events WHERE ${where} AND bot = 0 AND country IN ('US','PR') AND kind IN ('page_view','pdf_request') GROUP BY county_fips, county, region ORDER BY count DESC`),
-    // D1 permits only five compound SELECT terms; county details stay separate.
-    query(`${activity}, county_counts AS (
+    // D1 permits only five compound SELECT terms; finer geography stays separate.
+    query(`${activity}, location_counts AS (
       SELECT section, name, 'counties' AS dimension, county AS value, region AS detail, ${counts}
       FROM activity WHERE country IN ('US','PR') GROUP BY section, name, county, region
+      UNION ALL
+      SELECT section, name, 'cities' AS dimension, city AS value, country || ' / ' || region AS detail, ${counts}
+      FROM activity GROUP BY section, name, city, country, region
     ), ranked AS (
-      SELECT *, ROW_NUMBER() OVER (PARTITION BY section, name ORDER BY count DESC, value, detail) AS rank FROM county_counts
+      SELECT *, ROW_NUMBER() OVER (PARTITION BY section, name, dimension ORDER BY count DESC, value, detail) AS rank FROM location_counts
     ) SELECT section, name, dimension, value, detail, count, visitors, identifiedRequests, unidentifiedRequests FROM ranked WHERE rank <= 50 ORDER BY section, name, rank`),
+    query(`SELECT city AS name, country, region, kind, COUNT(*) AS count FROM events WHERE ${where} AND bot = 0 AND kind IN ('page_view','pdf_request','outbound_click') GROUP BY city, country, region, kind ORDER BY count DESC`),
   ]);
   const keys = ["totals", "daily", "pages", "outbound", "countries", "referrers", "devices", "campaigns"];
   results[1].results = pacificDaily(results[1].results);
@@ -214,6 +219,7 @@ async function report(request, env) {
     excludePersonal, personalActivity: results[12].results[0],
     states: results[13].results,
     counties: results[14].results, countyViews: results[15].results,
+    cities: results[17].results,
     gaPropertyId: "465165532", gaMeasurementId: env.GA_MEASUREMENT_ID, gaPdfForwarding: Boolean(env.GA_API_SECRET && env.GA_MEASUREMENT_ID),
     notes: ["PDF requests are retrieval starts, not confirmed reads. Nonzero byte ranges are excluded; anonymous retries can still count twice.",
       "Distinct visitors are estimated browsers, not identified people, using a random 30-day cookie. Only its hash is stored in D1. Old requests have no visitor identifier and cannot be deduplicated.",

@@ -17,6 +17,7 @@ function database() {
   db.exec(readFileSync(new URL("../migrations/0003_personal_activity.sql", import.meta.url), "utf8"));
   db.exec(readFileSync(new URL("../migrations/0004_county_geography.sql", import.meta.url), "utf8"));
   db.exec(readFileSync(new URL("../migrations/0005_ip_address.sql", import.meta.url), "utf8"));
+  db.exec(readFileSync(new URL("../migrations/0006_city.sql", import.meta.url), "utf8"));
   const prepare = (sql) => { assert.ok((sql.match(/UNION ALL/g) || []).length < 5, "D1 compound SELECT limit"); return ({ bind: (...params) => ({
     run: async () => db.prepare(sql).run(...params),
     all: async () => ({ results: db.prepare(sql).all(...params) }),
@@ -40,6 +41,7 @@ test("county collection trusts only edge metadata and never stores coordinates o
   const row = db.prepare("SELECT * FROM events").get();
   assert.equal(row.county, "Santa Clara County");
   assert.equal(row.county_fips, "06085");
+  assert.equal(row.city, "Stanford");
   assert.equal("latitude" in row || "longitude" in row || "ip" in row, false);
   assert.equal(JSON.stringify(row).includes("37.4275"), false);
 });
@@ -57,6 +59,14 @@ test("page and PDF events save edge IPs, never submitted JSON or forwarded heade
   }
   await ctx.finish();
   assert.equal(db.prepare("SELECT COUNT(*) AS n FROM events").get().n, 2);
+});
+
+test("cities come only from bounded edge metadata, including international city names", async () => {
+  const { DB, db } = database(), ctx = context();
+  const req = request("/__analytics/event", { method: "POST", headers: { Origin: ORIGIN }, body: JSON.stringify({ id: crypto.randomUUID(), kind: "page_view", path: "/", city: "Forged" }) });
+  Object.defineProperty(req, "cf", { value: { country: "CA", regionCode: "QC", city: "  Montr\u00e9al\n\u0000 " } });
+  await worker.fetch(req, { DB }, ctx); await ctx.finish();
+  assert.equal(db.prepare("SELECT city FROM events").get().city, "Montr\u00e9al");
 });
 
 test("production fetch keeps its native receiver and enables fallback only for public content", async () => {

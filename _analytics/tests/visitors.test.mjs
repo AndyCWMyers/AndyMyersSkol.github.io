@@ -20,6 +20,7 @@ function setup() {
   db.exec(readFileSync(new URL("../migrations/0003_personal_activity.sql", import.meta.url), "utf8"));
   db.exec(readFileSync(new URL("../migrations/0004_county_geography.sql", import.meta.url), "utf8"));
   db.exec(readFileSync(new URL("../migrations/0005_ip_address.sql", import.meta.url), "utf8"));
+  db.exec(readFileSync(new URL("../migrations/0006_city.sql", import.meta.url), "utf8"));
   const pending = [], ga = [];
   const prepare = sql => ({ bind: (...params) => ({ run: async () => db.prepare(sql).run(...params), all: async () => ({ results: db.prepare(sql).all(...params) }) }) });
   const env = { DB: { prepare, batch: queries => Promise.all(queries.map(query => query.all())) }, READ_TOKEN: SECRET,
@@ -414,6 +415,37 @@ test("county migration does not invent historical counties or alter event counts
   db.exec(readFileSync(new URL("../migrations/0004_county_geography.sql", import.meta.url), "utf8"));
   assert.equal(db.prepare("SELECT COUNT(*) AS n FROM events").get().n, 1);
   assert.deepEqual({ ...db.prepare("SELECT county, county_fips FROM events").get() }, { county: "", county_fips: "" });
+});
+
+test("city reports preserve state/country distinctions, missing history and personal filters", async () => {
+  const s = setup(), now = Math.floor(Date.now() / 1000), a = await visitorHash(A);
+  const insert = s.db.prepare("INSERT INTO events(id,occurred_at,kind,path,visitor_hash,country,region,city,is_personal,bot) VALUES(?,?,?,'/',?,'US',?,?,?,?)");
+  insert.run("first", now - 5, "page_view", a, "IL", "Springfield", 0, 0);
+  insert.run("last", now, "pdf_request", a, "MA", "Springfield", 0, 0);
+  insert.run("click", now, "outbound_click", a, "MA", "Springfield", 0, 0);
+  insert.run("missing", now, "page_view", "", "MA", "", 0, 0);
+  insert.run("own", now, "page_view", "", "MA", "Springfield", 1, 0);
+  insert.run("bot", now, "page_view", "", "MA", "Springfield", 0, 1);
+  const get = async suffix => (await s.request(`/__analytics/report${suffix}`, { Authorization: `Bearer ${SECRET}` })).json();
+  const report = await get("");
+  assert.equal(report.cities.length, 4);
+  assert.equal(report.cities.filter(r => r.name === "Springfield").length, 3);
+  assert.equal(report.cities.find(r => r.name === "").count, 1);
+  assert.equal(report.breakdowns.filter(r => r.dimension === "cities" && r.value === "Springfield" && r.section === "main").length, 2);
+  assert.equal((await get("?excludePersonal=0")).cities.length, 5);
+  assert.equal((await get("?view=users")).rows[0].city, "Springfield");
+  const history = await get(`?view=users&user=${a.slice(0,24)}`);
+  assert.ok(history.rows.every(r => r.city === "Springfield"));
+  assert.equal(history.rows[0].region, "IL");
+});
+
+test("city migration leaves previous events unchanged and unlocated", () => {
+  const db = new DatabaseSync(":memory:");
+  db.exec(readFileSync(new URL("../schema.sql", import.meta.url), "utf8"));
+  db.exec("INSERT INTO events(id,occurred_at,kind,path,country,region) VALUES('old',1,'page_view','/','US','CA')");
+  db.exec(readFileSync(new URL("../migrations/0006_city.sql", import.meta.url), "utf8"));
+  assert.equal(db.prepare("SELECT city FROM events").get().city, "");
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM events").get().n, 1);
 });
 
 test("IP profiles include every address across pages, never other users, bots, excluded or out-of-period events", async () => {

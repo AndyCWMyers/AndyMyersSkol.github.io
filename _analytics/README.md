@@ -168,7 +168,8 @@ Migration `0004_county_geography.sql` adds `county` and `county_fips` without
 backfilling historic visits. New events use Cloudflare's city-level IP coordinates
 to find a containing Census county using Turf's point-in-polygon implementation.
 Only edge metadata is trusted, not submitted browser location fields. Coordinates,
-city names and postal codes are not retained or sent to a lookup service. IP
+postal codes are not retained or sent to a lookup service. City names are retained
+prospectively via migration `0006_city.sql`; IP
 retention is separate, as described below.
 This applies to page/PDF requests and browser page/click events, with the existing
 opt-outs and personal filters unchanged. County data is not added to GA4.
@@ -215,6 +216,21 @@ user lists omit IPs. Profiles are fetched on demand, not offline-cached. Address
 are not sent to GA4, geocoders, logs or Git, and are not used to merge identities.
 No automatic IP deletion is configured; review retention and the site's privacy
 disclosures to reflect this additional collection.
+
+### City And Profile Map
+
+`0006_city.sql` preserves the edge-reported city on new events. Browser-submitted
+cities are ignored; missing historical city names remain unknown. City breakdowns
+group by city, region, and country to distinguish names shared by multiple places.
+Profiles, viewing histories, paper details, Geography's Cities mode and CSV exports
+show cities. City data is not added to GA4 by this change.
+
+The private profile's small state map highlights the latest estimated county in
+the selected period, with a city label. It is a county-area map, not a city/GPS pin;
+no coordinates or external geocoding/tile requests are introduced. Unsupported
+international states and missing county geometry have explicit fallback states.
+History groups have dated horizontal dividers using Pacific midnight, including
+DST changes; event numbering continues across groups and history pages.
 
 Existing GTM/GA4 tagging remains in place. Confirmed live property: `465165532`,
 stream: `9879831300`, measurement ID: `G-82ZD3DWY3B`. The Worker forwards non-bot,

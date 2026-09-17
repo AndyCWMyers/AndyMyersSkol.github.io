@@ -10,7 +10,7 @@ export async function userReport(db, url, dates, where, personal, excludePersona
   if (user) {
     rows = await db.prepare(`SELECT occurred_at AS time, kind,
       CASE WHEN path IN ('/index.html', '/index') THEN '/' ELSE path END AS path,
-      target, country, region, county, county_fips, ip_address, browser, device,
+      target, country, region, city, county, county_fips, ip_address, browser, device,
       CASE WHEN referrer_status = 'known' THEN referrer WHEN referrer_status = 'direct' THEN '__direct__' ELSE '__unknown__' END AS referrer,
       source, medium, campaign, ${personal} AS personal
       ${base} AND substr(visitor_hash, 1, 24) = ? ORDER BY occurred_at, rowid LIMIT ? OFFSET ?`)
@@ -29,6 +29,7 @@ export async function userReport(db, url, dates, where, personal, excludePersona
       SUM(kind != 'outbound_click') AS views, SUM(kind = 'outbound_click') AS clicks,
       MIN(occurred_at) AS firstSeen, MAX(occurred_at) AS lastSeen, MAX(personal) AS personal,
       MAX(CASE WHEN recent = 1 THEN country END) AS country, MAX(CASE WHEN recent = 1 THEN region END) AS region,
+      MAX(CASE WHEN recent = 1 THEN city END) AS city,
       MAX(CASE WHEN recent = 1 THEN county END) AS county, MAX(CASE WHEN recent = 1 THEN county_fips END) AS county_fips,
       MAX(CASE WHEN recent = 1 THEN browser END) AS browser, MAX(CASE WHEN recent = 1 THEN device END) AS device
       FROM activity GROUP BY visitor_hash ORDER BY lastSeen DESC, id LIMIT ? OFFSET ?`)

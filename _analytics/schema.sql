@@ -1,3 +1,4 @@
+-- Baseline schema. Apply migrations/ after initializing a database.
 CREATE TABLE IF NOT EXISTS events (
   id TEXT PRIMARY KEY,
   occurred_at INTEGER NOT NULL,

@@ -4,6 +4,7 @@ export default String.raw`function startAnalytics(measurementId) {
   const endpoint = "/__analytics/event";
 
   function send(kind, target = "") {
+    if ((document.cookie || "").split(";").some(part => part.trim() === "__Host-acw_ignore=1")) return;
     if (document.visibilityState !== "visible") return;
     const body = JSON.stringify({ id: crypto.randomUUID(), kind, path: location.pathname, target });
     if (!navigator.sendBeacon(endpoint, new Blob([body], { type: "text/plain" }))) {
@@ -30,6 +31,7 @@ export default String.raw`function startAnalytics(measurementId) {
   }
 
   function rememberGoogleSession() {
+    if ((document.cookie || "").split(";").some(part => part.trim() === "__Host-acw_ignore=1")) return;
     if (!measurementId || !Array.isArray(window.dataLayer)) return;
     const tag = function () { window.dataLayer.push(arguments); };
     tag("get", measurementId, "client_id", client => {

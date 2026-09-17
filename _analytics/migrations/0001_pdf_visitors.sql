@@ -1,0 +1,1 @@
+ALTER TABLE events ADD COLUMN visitor_hash TEXT NOT NULL DEFAULT '';

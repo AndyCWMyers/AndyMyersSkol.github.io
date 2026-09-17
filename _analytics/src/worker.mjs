@@ -1,5 +1,6 @@
 import clientSource from "./client.mjs";
 import { pdfIdentity, pdfCookie, sendPdfEvent } from "./ga.mjs";
+import { excludedBrowser, preferences, visitorIdentity, visitorHash } from "./preferences.mjs";
 
 // Configuration and bounded, privacy-preserving normalization.
 const HOSTS = new Set(["www.andrewcwmyers.com", "andrewcwmyers.com"]);
@@ -8,7 +9,7 @@ const encoder = new TextEncoder();
 const JSON_HEADERS = { "Content-Type": "application/json", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" };
 
 export function optedOut(request) {
-  return request.headers.get("DNT") === "1" || request.headers.get("Sec-GPC") === "1";
+  return excludedBrowser(request) || request.headers.get("DNT") === "1" || request.headers.get("Sec-GPC") === "1";
 }
 
 export function cleanPath(value) {
@@ -76,11 +77,12 @@ function metadata(request) {
 async function record(request, env, event) {
   if (!env.DB || optedOut(request)) return;
   const m = metadata(request);
+  const visitor = event.visitorId ? await visitorHash(event.visitorId) : "";
   await env.DB.prepare(`INSERT OR IGNORE INTO events
-    (id, occurred_at, kind, path, target, referrer, source, medium, campaign, country, region, browser, device, bot, status)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    (id, occurred_at, kind, path, target, referrer, source, medium, campaign, country, region, browser, device, bot, status, visitor_hash)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
     .bind(event.id || crypto.randomUUID(), Math.floor(Date.now() / 1000), event.kind, event.path, event.target || "",
-      m.referrer, m.source, m.medium, m.campaign, m.country, m.region, m.browser, m.device, m.bot, event.status || 200).run();
+      m.referrer, m.source, m.medium, m.campaign, m.country, m.region, m.browser, m.device, m.bot, event.status || 200, visitor).run();
 }
 
 function background(ctx, promise) {
@@ -141,13 +143,17 @@ async function report(request, env) {
     query(`SELECT referrer AS name, COUNT(*) AS count FROM events WHERE ${where} AND bot = 0 AND kind IN ('page_request','pdf_request') GROUP BY referrer ORDER BY count DESC LIMIT 100`),
     query(`SELECT browser AS name, device, COUNT(*) AS count FROM events WHERE ${where} AND bot = 0 AND kind IN ('page_view','pdf_request') GROUP BY browser, device ORDER BY count DESC`),
     query(`SELECT source, medium, campaign, COUNT(*) AS count FROM events WHERE ${where} AND bot = 0 AND source != '' GROUP BY source, medium, campaign ORDER BY count DESC LIMIT 100`),
+    query(`SELECT COUNT(DISTINCT NULLIF(visitor_hash, '')) AS visitors, COUNT(NULLIF(visitor_hash, '')) AS identifiedRequests, COUNT(*) - COUNT(NULLIF(visitor_hash, '')) AS unidentifiedRequests FROM events WHERE ${where} AND bot = 0 AND kind = 'pdf_request'`),
+    query(`SELECT path AS name, COUNT(DISTINCT NULLIF(visitor_hash, '')) AS visitors, COUNT(NULLIF(visitor_hash, '')) AS identifiedRequests, COUNT(*) - COUNT(NULLIF(visitor_hash, '')) AS unidentifiedRequests FROM events WHERE ${where} AND bot = 0 AND kind = 'pdf_request' GROUP BY path ORDER BY COUNT(*) DESC LIMIT 100`),
   ]);
   const keys = ["totals", "daily", "pages", "outbound", "countries", "referrers", "devices", "campaigns"];
   return json({ generatedAt: new Date().toISOString(), start: dates.start, end: dates.end,
     ...Object.fromEntries(keys.map((key, i) => [key, results[i].results])),
+    pdfVisitors: results[8].results[0], pdfVisitorsByPath: results[9].results,
     gaPropertyId: "465165532", gaMeasurementId: env.GA_MEASUREMENT_ID, gaPdfForwarding: Boolean(env.GA_API_SECRET && env.GA_MEASUREMENT_ID),
     notes: ["PDF requests are retrieval starts, not confirmed reads. Nonzero byte ranges are excluded; anonymous retries can still count twice.",
-      "Bot filtering uses browser signatures and is imperfect. The independent database stores no raw IPs or visitor identifiers. GA4 uses a short-lived PDF identifier or the existing Google tag identity; PDF engagement is not measured."] });
+      "Distinct PDF visitors are estimated browsers, not identified people, using a random 30-day cookie. Only its hash is stored in D1. Old requests have no visitor identifier and cannot be deduplicated.",
+      "Excluded browsers and privacy opt-outs are not recorded. No raw IPs or fingerprints are stored. Bots and cookie restrictions can affect counts."] });
 }
 
 // Public requests stay on the GitHub Pages origin; Cloudflare routes intercept them.
@@ -155,6 +161,7 @@ export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
     if (!HOSTS.has(url.hostname)) return json({ error: "Not found" }, 404);
+    if (url.pathname === "/__analytics/preferences") return preferences(request).catch(() => json({ error: "Preference unavailable" }, 503));
     if (url.pathname === "/__analytics/report") return report(request, env).catch(() => json({ error: "Analytics unavailable" }, 503));
     if (url.pathname === "/__analytics/event") return collect(request, env, ctx).catch(() => json({ error: "Analytics unavailable" }, 503));
     if (url.pathname === "/__analytics/client.js") return new Response(`(${clientSource})(${JSON.stringify(env.GA_MEASUREMENT_ID || "")});`, { headers: {
@@ -166,13 +173,17 @@ export default {
     if (optedOut(request) || request.method !== "GET") return response;
     const type = response.headers.get("Content-Type") || "";
     if ((type.includes("application/pdf") || (response.status === 304 && /\.pdf$/i.test(url.pathname))) && initialPdfRequest(request, response)) {
-      background(ctx, record(request, env, { kind: "pdf_request", path: url.pathname, status: response.status }));
       const info = metadata(request);
-      if (!info.bot && env.GA_API_SECRET && env.GA_MEASUREMENT_ID) {
-        const identity = pdfIdentity(request);
-        background(ctx, sendPdfEvent(request, env, identity, info));
+      const visitor = info.bot ? null : visitorIdentity(request);
+      background(ctx, record(request, env, { kind: "pdf_request", path: url.pathname, status: response.status, visitorId: visitor?.value }));
+      if (visitor) {
         const tracked = new Response(response.body, response);
-        tracked.headers.append("Set-Cookie", pdfCookie(identity));
+        tracked.headers.append("Set-Cookie", visitor.cookie);
+        if (env.GA_API_SECRET && env.GA_MEASUREMENT_ID) {
+          const identity = pdfIdentity(request);
+          background(ctx, sendPdfEvent(request, env, identity, info));
+          tracked.headers.append("Set-Cookie", pdfCookie(identity));
+        }
         // Revalidation makes later opens observable without altering PDF bytes or URLs.
         tracked.headers.set("Cache-Control", "private, no-cache");
         return tracked;

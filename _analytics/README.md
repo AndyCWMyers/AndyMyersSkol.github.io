@@ -15,7 +15,8 @@ changes. The `_analytics` directory is not published by Jekyll.
 2. Authorize the official Wrangler CLI with Workers, Workers Routes, D1 write,
    account/user/zone read permissions. Store credentials outside the repository.
 3. Create a dedicated D1 database, add its DB binding to `wrangler.jsonc`, and
-   apply `schema.sql` remotely.
+   apply `schema.sql` remotely, then `npx wrangler d1 migrations apply DB --remote`.
+   On an existing database, apply pending migrations before deploying Worker code.
 4. Set a cryptographically random `READ_TOKEN` using `wrangler secret put`.
 5. Set Cloudflare SSL to Full (strict). Preserve all registrar DNS records.
 6. Deploy only after reviewing the routes, then migrate DNS and verify PDFs,
@@ -40,6 +41,37 @@ There is no SQL endpoint and alternate Workers hostnames are disabled.
 - `pdf_click`: a website link click, distinct from retrieval.
 - `outbound_click`: an external HTTP(S) link, including WSJ, without query/hash.
 
+## Own Visits And Distinct Browsers
+
+Open `https://www.andrewcwmyers.com/__analytics/preferences` in each browser/profile
+used on the Mac Pro, MacBook Air, and iPhone. Check **Exclude this browser** and save.
+The confirmed page must say **This browser is excluded**. Reload any already-open
+website tabs. The one-year preference cookie follows that browser across networks,
+but clearing cookies, using a private window, or switching browser profiles requires
+setting it again. An IP exclusion is deliberately not used: it could exclude other
+Stanford/Hoover visitors and would fail when networks change. Uncheck and save to undo.
+The page is never tracked; it needs no account credentials. The Command Center links
+to it through the browser-exclusion settings icon. Native app webviews and Safari/
+Chrome may have separate cookie stores: use the browser actually used for the site.
+
+Excluded requests produce no new D1 events or GA4 PDF events. The homepage does not
+load GTM for excluded browsers. Previous events cannot be attributed to the owner
+retroactively, so no historical events are deleted or silently subtracted.
+
+Eligible PDF requests receive a random Secure/HttpOnly/SameSite=Lax first-party
+`__Host-acw_visitor` cookie lasting 30 days after the last PDF request. Only a SHA-256
+hash of this random value is stored in D1, never an IP-derived fingerprint or the
+raw cookie. Reports return distinct counts, not hashes. Counts deduplicate across
+the selected date range and per document. These are **estimated browsers, not
+identified people**. Different devices, cleared/blocked cookies, private windows,
+and unrecognized bots can inflate them; shared browser profiles can merge people.
+Browser cookie policies may shorten the lifetime. DNT/GPC and exclusions still apply.
+
+Visitor hashes were introduced prospectively on September 16, 2026 (Pacific).
+Historical rows retain an empty hash. Reports expose their unidentified-request
+count; the dashboard shows **Not measured** for historic-only data and an asterisk
+when distinct counts omit some requests. No fabricated visitor backfill is used.
+
 No raw IPs or browser fingerprints are stored. IPs are used only by Cloudflare's
 ephemeral rate limiter. DNT/GPC opt-outs are honored by this collector. Browser
 and bot classifications are coarse heuristics, not verified human identities.
@@ -56,7 +88,7 @@ The browser uses Google's documented `get` command to obtain available GA client
 and session IDs for a Secure, SameSite=Lax, 30-minute `__Host-acw_ga` cookie. Direct
 PDF visitors without that context receive a random 30-minute `__Host-acw_pdf`
 cookie (also HttpOnly). No IP-derived identity is used. These identifiers go to
-GA4, not D1. A direct PDF visit is not guaranteed to join later HTML visits or
+GA4, not D1; D1's separate PDF-browser hash is described above. A direct PDF visit is not guaranteed to join later HTML visits or
 recover historical acquisition attribution. Advertising use/personalization is
 denied for server events. The owner acknowledged the required privacy rights and
 disclosures before enabling this integration; this is not a compliance audit.

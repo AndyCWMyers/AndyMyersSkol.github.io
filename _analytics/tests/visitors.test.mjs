@@ -230,6 +230,11 @@ test("per-item counts and every detail dimension are date-, bot- and destination
   assert.equal(details.some(row => row.value === "ZZ" || row.value === "FR"), false);
   assert.equal(report.referrers.find(row => row.name === "__direct__").count, 2);
   assert.equal(report.referrers.find(row => row.name === "__unknown__").count, 1);
+  for (const key of ["countries", "referrers", "devices"]) {
+    for (const kind of ["page_view", "pdf_request", "outbound_click"]) {
+      assert.equal(report[key].filter(row => row.kind === kind).reduce((sum, row) => sum + row.count, 0), kind === "page_view" ? 2 : kind === "pdf_request" ? 3 : 1, `${key}:${kind}`);
+    }
+  }
   assert.equal(JSON.stringify(report).includes("visitor_hash"), false);
 });
 
@@ -302,6 +307,57 @@ test("marking a browser matches only its existing identity and unmarking rotates
   assert.match(unmarked.headers.get("Set-Cookie"), /__Host-acw_personal=;.*Max-Age=0/);
   assert.match(unmarked.headers.get("Set-Cookie"), /__Host-acw_visitor=;.*Max-Age=0/);
   assert.equal(JSON.stringify(filtered).includes(await visitorHash(A)), false);
+});
+
+test("private users and chronological histories paginate, filter personal activity and omit unknown identities", async () => {
+  const s = setup(), now = Math.floor(Date.now() / 1000), a = await visitorHash(A), b = await visitorHash(B);
+  const insert = s.db.prepare(`INSERT INTO events(id,occurred_at,kind,path,visitor_hash,country,region,browser,device,referrer_status,is_personal,bot) VALUES(?,?,?,?,?,'US','CA','Safari','Desktop','direct',?,?)`);
+  for (let i = 0; i < 103; i++) insert.run(`a-${i}`, now - 500 + i, "pdf_request", `/paper-${i}.pdf`, a, 0, 0);
+  insert.run("personal", now, "page_view", "/index.html", b, 0, 0);
+  s.db.prepare("INSERT INTO personal_visitors(visitor_hash) VALUES(?)").run(b);
+  insert.run("unknown", now, "pdf_request", "/unknown.pdf", "", 0, 0);
+  insert.run("bot", now, "pdf_request", "/bot.pdf", a, 0, 1);
+  insert.run("click-duplicate", now, "pdf_click", "/", a, 0, 0);
+  insert.run("old", now - 400 * 86400, "page_view", "/old", a, 0, 0);
+  const query = async suffix => (await s.request(`/__analytics/report?view=users${suffix}`, { Authorization: `Bearer ${SECRET}` })).json();
+  assert.equal((await s.request("/__analytics/report?view=users")).status, 401);
+  const filtered = await query("");
+  assert.equal(filtered.rows.length, 1);
+  assert.equal(filtered.rows[0].views, 103);
+  assert.equal(filtered.rows[0].id, a.slice(0, 24));
+  assert.equal(JSON.stringify(filtered).includes(a), false);
+  const all = await query("&excludePersonal=0");
+  assert.equal(all.rows.length, 2);
+  assert.equal(all.rows[0].personal, 1);
+  assert.equal(all.rows[0].country, "US");
+  assert.equal((await query(`&user=${b.slice(0, 24)}`)).rows.length, 0);
+  const first = await query(`&user=${a.slice(0, 24)}`), second = await query(`&user=${a.slice(0, 24)}&offset=100`);
+  assert.equal(first.rows.length, 100);
+  assert.equal(first.nextOffset, 100);
+  assert.equal(second.rows.length, 3);
+  assert.equal(second.nextOffset, null);
+  assert.deepEqual([...first.rows, ...second.rows].map(row => row.path), Array.from({ length: 103 }, (_, i) => `/paper-${i}.pdf`));
+  assert.equal(first.rows[0].referrer, "__direct__");
+  for (const suffix of ["&user=bad", "&offset=-1", "&offset=1.5", "&offset=10000000", "&excludePersonal=bad"]) {
+    assert.equal((await s.request(`/__analytics/report?view=users${suffix}`, { Authorization: `Bearer ${SECRET}` })).status, 400);
+  }
+  const report = await (await s.request("/__analytics/report", { Authorization: `Bearer ${SECRET}` })).json();
+  assert.deepEqual(report.states[0], { name: "CA", count: 104, visitors: 1, identifiedRequests: 103, unidentifiedRequests: 1 });
+});
+
+test("user list pagination includes every identity once and tie timestamps keep insertion order", async () => {
+  const s = setup(), now = Math.floor(Date.now() / 1000);
+  const insert = s.db.prepare("INSERT INTO events(id,occurred_at,kind,path,visitor_hash) VALUES(?,?,'page_view',?,?)");
+  for (let i = 1; i <= 101; i++) insert.run(String(i), now, "/", i.toString(16).padStart(64, "0").split("").reverse().join(""));
+  const get = async offset => (await (await s.request(`/__analytics/report?view=users&offset=${offset}`, { Authorization: `Bearer ${SECRET}` })).json());
+  const first = await get(0), second = await get(100);
+  assert.equal(first.nextOffset, 100);
+  assert.equal(second.nextOffset, null);
+  assert.equal(new Set([...first.rows, ...second.rows].map(row => row.id)).size, 101);
+  const hash = "f".repeat(64);
+  insert.run("z-first", now, "/first", hash); insert.run("a-second", now, "/second", hash);
+  const history = await (await s.request(`/__analytics/report?view=users&user=${hash.slice(0, 24)}`, { Authorization: `Bearer ${SECRET}` })).json();
+  assert.deepEqual(history.rows.map(row => row.path), ["/first", "/second"]);
 });
 
 test("do-not-record and privacy signals still override a personal marker", async () => {

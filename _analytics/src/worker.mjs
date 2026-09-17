@@ -2,6 +2,7 @@ import clientSource from "./client.mjs";
 import { pdfIdentity, pdfCookie, sendPdfEvent } from "./ga.mjs";
 import { excludedBrowser, personalBrowser, preferences, visitorIdentity, visitorHash } from "./preferences.mjs";
 import documents from "./documents.mjs";
+import { userReport } from "./users.mjs";
 
 // Configuration and bounded, privacy-preserving normalization.
 const HOSTS = new Set(["www.andrewcwmyers.com", "andrewcwmyers.com"]);
@@ -151,6 +152,10 @@ async function report(request, env) {
   const period = "occurred_at >= ? AND occurred_at < ?";
   const personal = "(is_personal = 1 OR visitor_hash IN (SELECT visitor_hash FROM personal_visitors))";
   const where = `${period}${excludePersonal ? ` AND NOT ${personal}` : ""}`;
+  if (url.searchParams.get("view") === "users") {
+    const value = await userReport(env.DB, url, dates, where, personal, excludePersonal);
+    return json(value, value.error ? 400 : 200);
+  }
   const query = (sql) => env.DB.prepare(sql).bind(dates.from, dates.until);
   const activity = `WITH activity AS (
     SELECT *, CASE WHEN kind = 'outbound_click' THEN 'outbound' ELSE 'main' END AS section,
@@ -160,7 +165,7 @@ async function report(request, env) {
   const counts = `COUNT(*) AS count, COUNT(DISTINCT NULLIF(visitor_hash, '')) AS visitors,
     COUNT(NULLIF(visitor_hash, '')) AS identifiedRequests, COUNT(*) - COUNT(NULLIF(visitor_hash, '')) AS unidentifiedRequests`;
   const inboundSource = "CASE WHEN referrer_status = 'known' THEN referrer WHEN referrer_status = 'direct' THEN '__direct__' ELSE '__unknown__' END";
-  // Fixed dimensions stay scoped to each destination; no visitor-level records leave D1.
+  // Fixed dimensions stay scoped to each destination.
   const dimensions = [
     ["geography", "country", "region"], ["browsers", "browser", "''"], ["devices", "device", "''"],
     ["sources", inboundSource, "''"], ["campaigns", "source", "medium || CASE WHEN campaign != '' THEN ' / ' || campaign ELSE '' END"],
@@ -169,15 +174,15 @@ async function report(request, env) {
     ${value} AS value, ${detail} AS detail, ${counts} FROM activity
     ${dimension === "campaigns" ? "WHERE source != '' OR medium != '' OR campaign != ''" : ""}
     GROUP BY section, name, ${value}, ${detail}`).join(" UNION ALL ");
-  // Only fixed, aggregate queries are exposed. No visitor identifiers or arbitrary SQL.
+  // Fixed aggregate queries; user histories use the private view above.
   const results = await env.DB.batch([
     query(`SELECT kind, bot, COUNT(*) AS count FROM events WHERE ${where} GROUP BY kind, bot`),
     query(`SELECT date(occurred_at, 'unixepoch') AS day, kind, COUNT(*) AS count FROM events WHERE ${where} AND bot = 0 GROUP BY day, kind ORDER BY day`),
     query(`SELECT CASE WHEN kind = 'pdf_click' THEN target ELSE path END AS name, kind, COUNT(*) AS count FROM events WHERE ${where} AND bot = 0 AND kind IN ('pdf_request','pdf_click','page_view') GROUP BY name, kind ORDER BY count DESC LIMIT 100`),
     query(`SELECT target AS name, COUNT(*) AS count FROM events WHERE ${where} AND bot = 0 AND kind = 'outbound_click' GROUP BY target ORDER BY count DESC LIMIT 100`),
-    query(`SELECT country AS name, COUNT(*) AS count FROM events WHERE ${where} AND bot = 0 AND kind IN ('page_view','pdf_request') GROUP BY country ORDER BY count DESC LIMIT 100`),
-    query(`SELECT ${inboundSource} AS name, COUNT(*) AS count FROM events WHERE ${where} AND bot = 0 AND kind IN ('page_view','pdf_request') GROUP BY name ORDER BY count DESC LIMIT 100`),
-    query(`SELECT browser AS name, device, COUNT(*) AS count FROM events WHERE ${where} AND bot = 0 AND kind IN ('page_view','pdf_request') GROUP BY browser, device ORDER BY count DESC`),
+    query(`SELECT country AS name, kind, COUNT(*) AS count FROM events WHERE ${where} AND bot = 0 AND kind IN ('page_view','pdf_request','outbound_click') GROUP BY country, kind ORDER BY count DESC`),
+    query(`SELECT ${inboundSource} AS name, kind, COUNT(*) AS count FROM events WHERE ${where} AND bot = 0 AND kind IN ('page_view','pdf_request','outbound_click') GROUP BY name, kind ORDER BY count DESC`),
+    query(`SELECT browser AS name, device, kind, COUNT(*) AS count FROM events WHERE ${where} AND bot = 0 AND kind IN ('page_view','pdf_request','outbound_click') GROUP BY browser, device, kind ORDER BY count DESC`),
     query(`SELECT source, medium, campaign, COUNT(*) AS count FROM events WHERE ${where} AND bot = 0 AND source != '' GROUP BY source, medium, campaign ORDER BY count DESC LIMIT 100`),
     query(`SELECT COUNT(DISTINCT NULLIF(visitor_hash, '')) AS visitors, COUNT(NULLIF(visitor_hash, '')) AS identifiedRequests, COUNT(*) - COUNT(NULLIF(visitor_hash, '')) AS unidentifiedRequests FROM events WHERE ${where} AND bot = 0 AND kind = 'pdf_request'`),
     query(`SELECT path AS name, COUNT(DISTINCT NULLIF(visitor_hash, '')) AS visitors, COUNT(NULLIF(visitor_hash, '')) AS identifiedRequests, COUNT(*) - COUNT(NULLIF(visitor_hash, '')) AS unidentifiedRequests FROM events WHERE ${where} AND bot = 0 AND kind = 'pdf_request' GROUP BY path ORDER BY COUNT(*) DESC LIMIT 100`),
@@ -186,6 +191,7 @@ async function report(request, env) {
       SELECT *, ROW_NUMBER() OVER (PARTITION BY section, name, dimension ORDER BY count DESC, value, detail) AS rank FROM breakdowns
     ) SELECT section, name, dimension, value, detail, count, visitors, identifiedRequests, unidentifiedRequests FROM ranked WHERE rank <= 50 ORDER BY section, name, dimension, rank`),
     query(`SELECT COUNT(*) AS events FROM events WHERE ${period} AND bot = 0 AND kind IN ('page_view', 'pdf_request', 'outbound_click') AND ${personal}`),
+    query(`SELECT region AS name, ${counts} FROM events WHERE ${where} AND bot = 0 AND country = 'US' AND kind IN ('page_view','pdf_request') GROUP BY region ORDER BY count DESC`),
   ]);
   const keys = ["totals", "daily", "pages", "outbound", "countries", "referrers", "devices", "campaigns"];
   return json({ generatedAt: new Date().toISOString(), start: dates.start, end: dates.end,
@@ -193,6 +199,7 @@ async function report(request, env) {
     pdfVisitors: results[8].results[0], pdfVisitorsByPath: results[9].results,
     documents, items: results[10].results, breakdowns: results[11].results,
     excludePersonal, personalActivity: results[12].results[0],
+    states: results[13].results,
     gaPropertyId: "465165532", gaMeasurementId: env.GA_MEASUREMENT_ID, gaPdfForwarding: Boolean(env.GA_API_SECRET && env.GA_MEASUREMENT_ID),
     notes: ["PDF requests are retrieval starts, not confirmed reads. Nonzero byte ranges are excluded; anonymous retries can still count twice.",
       "Distinct visitors are estimated browsers, not identified people, using a random 30-day cookie. Only its hash is stored in D1. Old requests have no visitor identifier and cannot be deduplicated.",

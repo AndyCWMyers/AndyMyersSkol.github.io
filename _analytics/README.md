@@ -1,7 +1,7 @@
 # Website Analytics
 
 Cloudflare Worker and D1 deployed September 16, 2026. The private Command Center
-Website Analytics dashboard reads these aggregates through its local host.
+Website Analytics dashboard reads aggregates and private browser histories through its local host.
 
 The Cloudflare Worker proxies the existing GitHub Pages origin. Normal content
 and PDF updates still publish through GitHub Pages. No PDF URL or page design
@@ -27,7 +27,11 @@ changes. The `_analytics` directory is not published by Jekyll.
    September 17 at 07:23 UTC. DNSSEC restoration is scheduled for a one-time
    follow-up at 07:30 UTC (12:30 a.m. Pacific), pending successful completion.
 
-`/__analytics/report` requires a bearer token and returns aggregate reports only.
+`/__analytics/report` requires a bearer token. It returns aggregates by default;
+`view=users` returns paginated anonymous browser summaries, and `user=<label>`
+returns that browser's chronological events in the selected period. Both views
+apply the same date, bot, and personal filters. Pages contain at most 100 rows;
+`nextOffset` provides continuation without silently truncating histories.
 The Command Center backend, not its browser bundle, holds this read-only token.
 There is no SQL endpoint and alternate Workers hostnames are disabled.
 
@@ -95,7 +99,9 @@ does not restore events that were never collected.
 Eligible HTML/PDF requests and browser events receive a random Secure/HttpOnly/SameSite=Lax first-party
 `__Host-acw_visitor` cookie lasting 30 days after the last tracked request. Only a SHA-256
 hash of this random value is stored in D1, never an IP-derived fingerprint or the
-raw cookie. Reports return distinct counts, not hashes. Counts deduplicate across
+raw cookie. Aggregate reports return distinct counts, not hashes. The authenticated
+Users view labels browsers with the first 24 hex characters of their random-cookie
+hash; these labels are not credentials and do not identify people. Counts deduplicate across
 the selected date range and per document or outbound destination. Dashboard labels
 use **Distinct users**, with the cookie limitations in tooltips. These are **estimated browsers, not
 identified people**. Different devices, cleared/blocked cookies, private windows,
@@ -115,13 +121,21 @@ when changing public paper titles or links; its tests verify titles and local as
 Unlisted PDFs with activity also appear under their paths. Selecting a page, paper,
 CV, or outbound destination opens a right-side panel with country/region, inbound
 source, browser, device, and available campaign aggregates for that item and period.
-The time chart is at the bottom. All main figures and detail queries exclude bots.
+The time chart has its own **Traffic plot** tab. Papers & CV includes a views/users
+bar chart with independently toggleable labels; Geography includes a U.S. state
+map and state totals. The wide detail panel supports individual browser histories
+in the **Users** tab. Marked personal browsers display **You** in a distinct color.
+Geography, inbound sources, and browser/device tables separate webpage views,
+PDF requests, and outbound clicks into three count columns.
+All main figures and detail queries exclude bots.
 PDF link clicks and HTML request logs are not added to document-view counts.
 
 The same first-party visitor identity now covers visible page views and outbound
 clicks, not only PDF requests. HTML responses establish it before the browser script
-runs; a collector response also sets it for previously cached pages. No identifiers
-are returned by the report endpoint. Historic missing identities remain unknown.
+runs; a collector response also sets it for previously cached pages. Only the
+private Users view returns pseudonymous browser labels, never raw cookies, full
+hashes, or IPs. Historic missing identities remain unknown. Histories are fetched
+on demand through the host and are not saved in the browser's offline report cache.
 
 Inbound sources distinguish **Direct** (a captured request with no referrer supplied)
 from **Unknown** (missing/invalid capture, including older browser events). Direct

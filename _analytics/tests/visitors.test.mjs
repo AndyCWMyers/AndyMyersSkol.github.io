@@ -41,7 +41,11 @@ test("preferences use same-origin POST, never count page visits, and can be reve
   const get = await s.request("/__analytics/preferences");
   assert.match(await get.text(), /This browser is included/);
   assert.equal(get.headers.get("Cache-Control"), "private, no-store");
+  assert.equal(get.headers.get("Referrer-Policy"), "same-origin");
   assert.equal((await s.request("/__analytics/preferences", { Origin: "https://evil.example" }, { method: "POST", body: "exclude=1" })).status, 403);
+  for (const headers of [{}, { Origin: "null" }]) {
+    assert.equal((await s.request("/__analytics/preferences", headers, { method: "POST", body: "exclude=1" })).status, 403);
+  }
   for (const body of ["exclude=2", "exclude=1&token=bad", "x".repeat(65)]) {
     assert.equal((await s.request("/__analytics/preferences", { Origin: ROOT }, { method: "POST", body })).status, 400);
   }

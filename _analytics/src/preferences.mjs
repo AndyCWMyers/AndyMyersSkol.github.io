@@ -1,7 +1,8 @@
 const EXCLUSION_COOKIE = "__Host-acw_ignore";
 const VISITOR_COOKIE = "__Host-acw_visitor";
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
-const HEADERS = { "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer" };
+// Preserve the origin on this page's same-origin form POST, without external referrers.
+const HEADERS = { "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff", "Referrer-Policy": "same-origin" };
 
 export function cookieValue(request, name) {
   const prefix = `${name}=`;

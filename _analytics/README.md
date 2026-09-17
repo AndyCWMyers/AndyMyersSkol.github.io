@@ -231,7 +231,13 @@ The report endpoint accepts scoped `view` values: `summary`, `overview`, `papers
 `detail` (requiring a bound `section=main|outbound` and `name`). These execute only
 their named query plans. Omitted `view` or `view=all` retains the complete report
 for older clients and explicit CSV export. `view=users` lists paginated visitors;
-`view=live` selects active reading sessions checked in within 315 seconds. Overview
+`view=live` selects active reading sessions checked in within 315 seconds, plus
+recorded page views, PDF requests and outbound clicks within 300 seconds when that
+event has no reading session or no received check-in. A paused tracked session
+does not fall back to its opening event. This also covers host visits without
+reading measurement. Known bots, duplicate requests and unidentified visits are
+excluded. The same indexed, read-only calculation supplies list and profile
+`liveAt`/`liveUntil` values; fallback activity requires no new stored data. Overview
 falls back to the three most recent users if none are live. Optional `page=/...`
 scopes aggregates and reading summaries to a canonical page path; Users then
 selects the cohort that viewed it while retaining each user's full-period history.
@@ -276,7 +282,8 @@ Both retain existing personal, bot, date and PDF-duplicate filters.
 The Users list is newest-first with 15 users per page; individual histories retain
 100 events per page, newest first. Responses include `limit` so clients
 can navigate backward correctly. The red Live indicator uses active reading
-check-ins within five minutes plus 15 seconds of tolerance, not recent view counts.
+check-ins within five minutes plus 15 seconds of tolerance, or the five-minute
+unmeasured-activity fallback above. Neither proves the user is still online.
 
 All date filters and daily buckets use `America/Los_Angeles` (Pacific midnight),
 with daylight saving time handled by Intl. Timestamps remain stored as UTC epoch

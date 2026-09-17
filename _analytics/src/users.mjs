@@ -4,6 +4,27 @@ import { queryUsage } from "./report-plan.mjs";
 import { userReading, historyReading } from "./engagement.mjs";
 import { pdfDiagnostics } from "./pdf-diagnostics.mjs";
 
+function liveActivityQuery(excludePersonal, page) {
+  // Both branches use time indexes; fallback activity never creates heartbeat writes.
+  return `SELECT visitor_hash, MAX(time) AS liveAt, MAX(expires) AS liveUntil FROM (
+    SELECT s.visitor_hash, s.last_seen AS time, s.last_seen + 315 AS expires
+    FROM reading_sessions s WHERE s.active = 1
+      AND s.last_seen >= unixepoch() - 315 AND s.last_seen <= unixepoch()
+      AND s.last_seen >= ?1 AND s.last_seen < ?2 ${page ? "AND s.path = ?3" : ""}
+      ${excludePersonal ? "AND s.is_personal = 0 AND s.visitor_hash NOT IN (SELECT visitor_hash FROM personal_visitors)" : ""}
+    UNION ALL
+    SELECT e.visitor_hash, e.occurred_at AS time, e.occurred_at + 300 AS expires
+    FROM events e LEFT JOIN reading_sessions s ON s.id = e.id
+    WHERE e.occurred_at >= unixepoch() - 300 AND e.occurred_at <= unixepoch()
+      AND e.occurred_at >= ?1 AND e.occurred_at < ?2
+      AND e.bot = 0 AND e.duplicate_of = '' AND e.visitor_hash != ''
+      AND e.kind IN ('page_view','pdf_request','outbound_click')
+      AND (s.id IS NULL OR s.seq < 0)
+      ${page ? "AND CASE WHEN e.path IN ('/index','/index.html') THEN '/' ELSE e.path END = ?3" : ""}
+      ${excludePersonal ? "AND e.is_personal = 0 AND e.visitor_hash NOT IN (SELECT visitor_hash FROM personal_visitors)" : ""}
+  ) GROUP BY visitor_hash`;
+}
+
 export async function userReport(db, url, dates, personal, excludePersonal, page = "") {
   const user = url.searchParams.get("user") || "";
   const offsetText = url.searchParams.get("offset") || "0";
@@ -15,9 +36,8 @@ export async function userReport(db, url, dates, personal, excludePersonal, page
     WHERE CASE WHEN path IN ('/index','/index.html') THEN '/' ELSE path END = ?3
       AND ((occurred_at >= ?1 AND occurred_at < ?2) OR id IN (SELECT session_id FROM reading_hours WHERE hour >= ?1 AND hour < ?2))
       AND bot = 0 AND duplicate_of = '' AND kind IN ('page_view','pdf_request'))` : "";
-  const liveFilter = live ? `AND visitor_hash IN (SELECT visitor_hash FROM reading_sessions
-    WHERE active = 1 AND last_seen >= unixepoch() - 315 AND last_seen <= unixepoch()
-      AND last_seen >= ?1 AND last_seen < ?2 ${page ? "AND path = ?3" : ""})` : "";
+  const activitySql = liveActivityQuery(excludePersonal, page);
+  const liveFilter = live ? `AND visitor_hash IN (SELECT visitor_hash FROM (${activitySql}))` : "";
   const base = `FROM events WHERE ((occurred_at >= ?1 AND occurred_at < ?2)
       OR id IN (SELECT session_id FROM reading_hours WHERE hour >= ?1 AND hour < ?2))
     AND duplicate_of = '' ${excludePersonal ? `AND NOT ${personal}` : ""}
@@ -65,11 +85,18 @@ export async function userReport(db, url, dates, personal, excludePersonal, page
     measured.push(["users", rows]);
   }
   const visible = rows.results.slice(0, limit);
+  const labels = user ? [user] : visible.map(row => row.id);
+  const activity = labels.length ? await db.prepare(`SELECT substr(visitor_hash,1,24) AS id, liveAt, liveUntil
+    FROM (${activitySql}) WHERE substr(visitor_hash,1,24) IN (${labels.map(() => "?").join(",")})`)
+    .bind(...params, ...labels).all() : null;
+  if (activity) measured.push(["userLiveActivity", activity]);
+  const byActivity = new Map(activity?.results.map(({ id, ...row }) => [id, row]) || []);
+  const liveDetails = id => byActivity.get(id) || { liveAt: 0, liveUntil: 0 };
   const reading = await userReading(db, dates, excludePersonal, user ? [user] : visible.map(row => row.id));
   if (reading.measured) measured.push(reading.measured);
   let engagement;
   if (user) {
-    engagement = visible.length ? reading.rows[0] : undefined;
+    engagement = visible.length ? { ...reading.rows[0], ...liveDetails(user) } : undefined;
     const history = await historyReading(db, dates, excludePersonal, visible.map(row => row.id));
     measured.push(...history.measured);
     const byId = new Map(history.rows.map(row => [row.id, row]));
@@ -86,6 +113,7 @@ export async function userReport(db, url, dates, personal, excludePersonal, page
         Object.assign(row, detail);
         if (detail.lastReadingAt >= row.lastSeen && detail.lastReadingAt < dates.until) row.lastPath = detail.lastReadingPath;
       }
+      Object.assign(row, liveDetails(row.id));
     }
   }
   return { start: dates.start, end: dates.end, excludePersonal, page, live, user, offset, limit,

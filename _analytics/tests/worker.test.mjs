@@ -285,6 +285,7 @@ test("profile index preserves records and is used by both history and IP queries
   const before = db.prepare("SELECT * FROM events ORDER BY rowid").all();
   db.exec(readFileSync(new URL("../migrations/0009_user_history_index.sql", import.meta.url), "utf8"));
   assert.deepEqual(db.prepare("SELECT * FROM events ORDER BY rowid").all(), before);
+  db.exec(readFileSync(new URL("../migrations/0012_page_filter.sql", import.meta.url), "utf8"));
   const plans = [];
   const inspected = { prepare: sql => ({ bind: (...params) => {
     plans.push(db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all(...params));
@@ -293,7 +294,9 @@ test("profile index preserves records and is used by both history and IP queries
   const response = await worker.fetch(request(`/__analytics/report?view=users&user=${"0".repeat(24)}`, { headers: { Authorization: `Bearer ${SECRET}` } }), { DB: inspected, READ_TOKEN: SECRET }, context());
   assert.equal(response.status, 200);
   const value = await response.json();
-  assert.equal(value.queryUsage.queryCount, 5);
-  assert.equal(plans.length, 5);
+  assert.equal(value.queryUsage.queryCount, 6);
+  assert.equal(plans.length, 6);
   assert.ok(plans.slice(0, 2).every(plan => plan.some(row => row.detail.includes("events_user_history"))));
+  assert.ok(plans[2].some(row => row.detail.includes("events_time")));
+  assert.ok(plans[2].some(row => row.detail.includes("reading_live")));
 });

@@ -143,6 +143,55 @@ test("live users require a current active check-in and respect page and personal
   assert.equal((await report(DB, `view=users&${suffix}`)).rows.length, 3);
 });
 
+test("live fallback uses recent unmeasured activity consistently in lists and profiles", async () => {
+  const { DB, db } = database(), current = Math.floor(Date.now() / 1000);
+  const hashes = new Map();
+  const insert = db.prepare("INSERT INTO events(id,occurred_at,kind,path,visitor_hash,bot,duplicate_of,is_personal) VALUES(?,?,?,?,?,?,?,?)");
+  const fixtures = [
+    ["raw", "pdf_request", PDF, 120], ["expired", "pdf_request", PDF, 301],
+    ["home", "page_view", "/index.html", 60], ["click", "outbound_click", "/", 70],
+    ["waiting", "pdf_request", PDF, 90], ["paused", "pdf_request", PDF, 10],
+    ["host", "pdf_request", PDF, 80], ["registered", "pdf_request", PDF, 90],
+    ["future", "pdf_request", PDF, -60], ["bot", "pdf_request", PDF, 10],
+    ["duplicate", "pdf_request", PDF, 10], ["pdf-click-only", "pdf_click", PDF, 10],
+    ["anonymous", "pdf_request", PDF, 10],
+  ];
+  for (const [id, kind, path, age] of fixtures) {
+    const hash = id === "anonymous" ? "" : await visitorHash(id);
+    hashes.set(id, hash);
+    insert.run(id, current - age, kind, path, hash, id === "bot" ? 1 : 0, id === "duplicate" ? "original" : "", id === "host" ? 1 : 0);
+    if (["waiting", "paused", "host"].includes(id)) await startReading(DB, id, hash);
+  }
+  db.exec("UPDATE reading_sessions SET seq=1, active=0 WHERE id='paused'");
+  db.prepare("INSERT INTO personal_visitors(visitor_hash) VALUES(?)").run(hashes.get("registered"));
+  insert.run("click-home", current - 600, "page_view", "/", hashes.get("click"), 0, "", 0);
+  // An old tracked visit does not prevent fallback on a new raw retrieval.
+  insert.run("older-session", current - 600, "pdf_request", PDF, hashes.get("raw"), 0, "", 0);
+  await startReading(DB, "older-session", hashes.get("raw"));
+  db.exec("UPDATE reading_sessions SET seq=1 WHERE id='older-session'");
+  const changes = db.prepare("SELECT total_changes() AS n").get().n;
+  const expected = ["raw", "home", "click", "waiting"].map(id => hashes.get(id).slice(0,24)).sort();
+  const live = await report(DB, "view=live");
+  assert.deepEqual(live.rows.map(row => row.id).sort(), expected);
+  const users = await report(DB, "view=users");
+  assert.deepEqual(users.rows.filter(row => row.liveAt > 0).map(row => row.id).sort(), expected);
+  for (const row of live.rows) {
+    assert.equal(row.liveUntil, row.liveAt + 300);
+    const profile = await report(DB, `view=users&user=${row.id}`);
+    assert.equal(profile.engagement.liveAt, row.liveAt);
+    assert.equal(profile.engagement.liveUntil, row.liveUntil);
+  }
+  assert.equal((await report(DB, "view=live&excludePersonal=0")).rows.length, 6);
+  const filtered = await report(DB, `view=live&page=${encodeURIComponent(PDF)}`);
+  assert.deepEqual(filtered.rows.map(row => row.id).sort(), ["raw", "waiting"].map(id => hashes.get(id).slice(0,24)).sort());
+  assert.deepEqual((await report(DB, "view=live&page=%2F")).rows.map(row => row.id).sort(), ["home", "click"].map(id => hashes.get(id).slice(0,24)).sort());
+  assert.equal((await report(DB, "view=live&start=2020-01-01&end=2020-01-01")).rows.length, 0);
+  assert.equal(db.prepare("SELECT total_changes() AS n").get().n, changes);
+  // A received pause supersedes the unmeasured-view fallback immediately.
+  db.exec("UPDATE reading_sessions SET seq=1, active=0 WHERE id='waiting'");
+  assert.equal((await report(DB, "view=live")).rows.length, 3);
+});
+
 test("headline engagement includes homepage time and honors page and personal filters", async () => {
   const { DB, db } = database();
   const pdf = await session(db, DB), home = await session(db, DB, { path: "/", kind: "page_view" }), own = await session(db, DB);

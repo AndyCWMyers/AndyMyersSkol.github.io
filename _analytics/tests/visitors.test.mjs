@@ -304,6 +304,7 @@ test("homepage, clicks and PDFs share one visitor cookie while source capture st
     const response = await s.request("/__analytics/event", { Origin: ROOT, Cookie: cookie }, { method: "POST", body: JSON.stringify({ id: crypto.randomUUID(), path: "/", ...event }) });
     assert.equal(response.status, 204);
     assert.equal(response.headers.get("Set-Cookie").split(";")[0], cookie);
+    await s.finish();
   }
   s.env.ORIGIN.fetch = async () => new Response("%PDF", { headers: { "Content-Type": "application/pdf" } });
   await s.request("/paper.pdf", { Cookie: cookie });

@@ -176,7 +176,7 @@ async function report(request, env) {
     GROUP BY section, name, ${value}, ${detail}`).join(" UNION ALL ");
   // Fixed aggregate queries; user histories use the private view above.
   const results = await env.DB.batch([
-    query(`SELECT kind, bot, COUNT(*) AS count FROM events WHERE ${where} GROUP BY kind, bot`),
+    query(`SELECT kind, bot, ${counts} FROM events WHERE ${where} GROUP BY kind, bot`),
     query(`SELECT date(occurred_at, 'unixepoch') AS day, kind, COUNT(*) AS count FROM events WHERE ${where} AND bot = 0 GROUP BY day, kind ORDER BY day`),
     query(`SELECT CASE WHEN kind = 'pdf_click' THEN target ELSE path END AS name, kind, COUNT(*) AS count FROM events WHERE ${where} AND bot = 0 AND kind IN ('pdf_request','pdf_click','page_view') GROUP BY name, kind ORDER BY count DESC LIMIT 100`),
     query(`SELECT target AS name, COUNT(*) AS count FROM events WHERE ${where} AND bot = 0 AND kind = 'outbound_click' GROUP BY target ORDER BY count DESC LIMIT 100`),

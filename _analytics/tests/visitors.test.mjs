@@ -141,6 +141,22 @@ test("distinct PDF browsers deduplicate repeats across documents without inventi
   assert.equal(JSON.stringify(s.db.prepare("SELECT * FROM events").all()).includes(A), false);
 });
 
+test("headline distinct counts deduplicate across destinations and respect filters for each traffic kind", async () => {
+  const s = setup(), now = Math.floor(Date.now() / 1000);
+  const insert = s.db.prepare("INSERT INTO events(id,occurred_at,kind,path,target,visitor_hash,is_personal,bot) VALUES(?,?,?,?,?,?,?,?)");
+  for (const kind of ["page_view", "pdf_request", "outbound_click"]) {
+    for (const [path, visitor, personal, bot, time] of [["/a", "one", 0, 0, now], ["/b", "one", 0, 0, now], ["/a", "two", 1, 0, now], ["/a", "", 0, 0, now], ["/a", "bot", 0, 1, now], ["/a", "old", 0, 0, now - 400 * 86400]]) {
+      insert.run(crypto.randomUUID(), time, kind, path, `https://example.com${path}`, visitor, personal, bot);
+    }
+  }
+  for (const filter of ["0", "1"]) {
+    const report = await (await s.request(`/__analytics/report?excludePersonal=${filter}`, { Authorization: `Bearer ${SECRET}` })).json();
+    for (const kind of ["page_view", "pdf_request", "outbound_click"]) {
+      assert.deepEqual(report.totals.find(row => row.kind === kind && row.bot === 0), { kind, bot: 0, count: filter === "1" ? 3 : 4, visitors: filter === "1" ? 1 : 2, identifiedRequests: filter === "1" ? 2 : 3, unidentifiedRequests: 1 });
+    }
+  }
+});
+
 test("additive migration preserves existing requests with explicitly unknown visitors", () => {
   const db = new DatabaseSync(":memory:");
   db.exec(readFileSync(new URL("../schema.sql", import.meta.url), "utf8"));

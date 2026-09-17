@@ -1,4 +1,4 @@
-import startAnalytics from "./client.mjs";
+import clientSource from "./client.mjs";
 import { pdfIdentity, pdfCookie, sendPdfEvent } from "./ga.mjs";
 
 // Configuration and bounded, privacy-preserving normalization.
@@ -157,7 +157,7 @@ export default {
     if (!HOSTS.has(url.hostname)) return json({ error: "Not found" }, 404);
     if (url.pathname === "/__analytics/report") return report(request, env).catch(() => json({ error: "Analytics unavailable" }, 503));
     if (url.pathname === "/__analytics/event") return collect(request, env, ctx).catch(() => json({ error: "Analytics unavailable" }, 503));
-    if (url.pathname === "/__analytics/client.js") return new Response(`(${startAnalytics.toString()})(${JSON.stringify(env.GA_MEASUREMENT_ID || "")});`, { headers: {
+    if (url.pathname === "/__analytics/client.js") return new Response(`(${clientSource})(${JSON.stringify(env.GA_MEASUREMENT_ID || "")});`, { headers: {
       "Content-Type": "application/javascript", "Cache-Control": "public, max-age=300", "X-Content-Type-Options": "nosniff" } });
     if (url.pathname.startsWith("/__analytics/")) return json({ error: "Not found" }, 404);
     // Public GET/HEAD content can bypass a tracking-code exception. Private APIs cannot.

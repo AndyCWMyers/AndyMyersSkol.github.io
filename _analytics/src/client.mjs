@@ -1,5 +1,5 @@
-// This self-contained function is delivered as a first-party browser script.
-export default function startAnalytics(measurementId) {
+// Keep browser code as text so Worker bundling cannot inject out-of-scope helpers.
+export default String.raw`function startAnalytics(measurementId) {
   if (navigator.globalPrivacyControl || navigator.doNotTrack === "1") return;
   const endpoint = "/__analytics/event";
 
@@ -36,7 +36,7 @@ export default function startAnalytics(measurementId) {
       if (!/^\d{1,20}\.\d{1,20}$/.test(String(client))) return;
       tag("get", measurementId, "session_id", session => {
         if (!/^\d{1,12}$/.test(String(session)) || Number(session) <= 0) return;
-        document.cookie = `__Host-acw_ga=${client}|${session}|${Math.floor(Date.now() / 1000)}; Path=/; Secure; SameSite=Lax; Max-Age=1800`;
+        document.cookie = "__Host-acw_ga=" + client + "|" + session + "|" + Math.floor(Date.now() / 1000) + "; Path=/; Secure; SameSite=Lax; Max-Age=1800";
       });
     });
   }
@@ -46,4 +46,4 @@ export default function startAnalytics(measurementId) {
   document.addEventListener("visibilitychange", visible);
   visible();
   rememberGoogleSession();
-}
+}`;

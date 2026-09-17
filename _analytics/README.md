@@ -9,7 +9,9 @@ changes. The `_analytics` directory is not published by Jekyll.
 
 ## Deployment
 
-1. `npm ci`, then `npm test`.
+1. `npm ci`, then `npm test` and `npm run test:bundle`. The bundle test catches
+   transformations that unit tests of the source alone cannot. Bump the script's
+   version query in `index.html` when changing the browser collector.
 2. Authorize the official Wrangler CLI with Workers, Workers Routes, D1 write,
    account/user/zone read permissions. Store credentials outside the repository.
 3. Create a dedicated D1 database, add its DB binding to `wrangler.jsonc`, and

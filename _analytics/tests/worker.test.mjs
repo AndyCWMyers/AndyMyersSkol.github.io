@@ -136,11 +136,12 @@ test("reports aggregate real SQL results and exclude classified bots", async () 
   assert.equal(data.totals.find(p => p.bot === 1).count, 1);
 });
 
-test("browser script sends one visible page view and normalizes external/PDF clicks", () => {
+test("served browser script sends one visible page view and normalizes external/PDF clicks", async () => {
   const listeners = {}, sent = [];
   const document = { visibilityState: "visible", addEventListener: (name, fn) => { listeners[name] = fn; }, removeEventListener: () => {} };
   const navigator = { sendBeacon: (url, body) => { sent.push({ url, body }); return true; } };
-  vm.runInNewContext(`(${startAnalytics.toString()})();`, { document, navigator, location: new URL(ORIGIN), URL, Blob, crypto });
+  const response = await worker.fetch(request("/__analytics/client.js"), {}, context());
+  vm.runInNewContext(await response.text(), { document, navigator, location: new URL(ORIGIN), URL, Blob, crypto });
   listeners.click({ type: "click", target: { closest: () => ({ href: "https://www.wsj.com/article?secret=x#x" }) } });
   listeners.auxclick({ type: "auxclick", button: 1, target: { closest: () => ({ href: ORIGIN + "/paper.pdf" }) } });
   assert.equal(sent.length, 3);

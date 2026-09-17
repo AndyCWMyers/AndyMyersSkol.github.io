@@ -140,6 +140,26 @@ when distinct counts omit some requests. No fabricated visitor backfill is used.
 
 ## Dashboard Details
 
+The report endpoint accepts scoped `view` values: `summary`, `overview`, `papers`,
+`outbound`, `geography`, `sources`, `devices`, `states`, `counties`, `countries`, and
+`detail` (requiring a bound `section=main|outbound` and `name`). These execute only
+their named query plans. Omitted `view` or `view=all` retains the complete report
+for older clients and explicit CSV export. Existing `view=users` is unchanged.
+Initial Overview and the default state map use four SQL queries total instead of
+nineteen; tab/map switches and destination details fetch on demand. All queries
+preserve date, personal, bot, duplicate and distinct-browser semantics.
+
+Authenticated responses include `queryUsage` with named query counts, rows read,
+rows written and duration from D1 metadata (null when unavailable). No SQL, tokens,
+IPs or visitor identities are included in these diagnostics. Cache hits reuse the
+original execution measurements; they do not themselves repeat those D1 reads.
+The Command Center caches scoped aggregates and user-list pages for one minute,
+coalesces matching concurrent requests, and never caches individual histories/IPs.
+Migration `0009_user_history_index.sql` adds an expression/time index matching
+profile labels and filters. Both history and full-period IP queries use it; no
+recorded events are modified or removed. User-list grouping still examines the
+selected period, so its LIMIT is not a guarantee of only fifteen rows read.
+
 Country maps use `countryViews`, which counts page/PDF views and deduplicates
 browser identities across all regions and documents within each country. The
 `countries` detail dimension provides the same deduplication per destination,

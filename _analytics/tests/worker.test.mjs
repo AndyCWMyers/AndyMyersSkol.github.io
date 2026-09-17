@@ -9,7 +9,7 @@ import startAnalytics from "../src/client.mjs";
 const ORIGIN = "https://www.andrewcwmyers.com";
 const SECRET = "test-only-token-not-a-production-secret";
 
-function database() {
+function database(includeHistoryIndex = true) {
   const db = new DatabaseSync(":memory:");
   db.exec(readFileSync(new URL("../schema.sql", import.meta.url), "utf8"));
   db.exec(readFileSync(new URL("../migrations/0001_pdf_visitors.sql", import.meta.url), "utf8"));
@@ -20,6 +20,7 @@ function database() {
   db.exec(readFileSync(new URL("../migrations/0006_city.sql", import.meta.url), "utf8"));
   db.exec(readFileSync(new URL("../migrations/0007_pdf_duplicates.sql", import.meta.url), "utf8"));
   db.exec(readFileSync(new URL("../migrations/0008_client_metadata.sql", import.meta.url), "utf8"));
+  if (includeHistoryIndex) db.exec(readFileSync(new URL("../migrations/0009_user_history_index.sql", import.meta.url), "utf8"));
   const prepare = (sql) => { assert.ok((sql.match(/UNION ALL/g) || []).length < 5, "D1 compound SELECT limit"); return ({ bind: (...params) => ({
     run: async () => db.prepare(sql).run(...params),
     all: async () => ({ results: db.prepare(sql).all(...params) }),
@@ -222,4 +223,75 @@ test("served browser script sends one visible page view and normalizes external/
   assert.equal(sent.length, 3);
   assert.equal(agentInfo("Googlebot").bot, 1);
   assert.equal(agentInfo("Mozilla/5.0 Chrome/130.0 Safari/537.36").browser, "Chrome");
+});
+
+test("lazy report plans preserve full-report values while skipping unopened tabs and details", async () => {
+  const { DB, db } = database();
+  const now = Math.floor(Date.now() / 1000), host = "b".repeat(64);
+  db.prepare("INSERT INTO personal_visitors(visitor_hash) VALUES(?)").run(host);
+  for (let i = 0; i < 48; i++) {
+    db.prepare(`INSERT INTO events(id, occurred_at, kind, path, target, visitor_hash, bot, country, region, county, county_fips, city, browser, device, os, referrer, referrer_status, duplicate_of)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(String(i), now - (i === 47 ? 400 * 86400 : i),
+      ["page_view", "pdf_request", "outbound_click", "pdf_click"][i % 4], ["/", "/paper.pdf", "/index.html"][i % 3], "https://example.com/article", i % 7 === 0 ? "" : i % 5 === 0 ? host : "a".repeat(64),
+      i % 11 === 0 ? 1 : 0, "US", i % 2 ? "CA" : "NY", "County", "06085", "City", "Chrome", "Desktop", "macOS", "example.com", "known", i === 1 ? "duplicate" : "");
+  }
+  const calls = [];
+  const measured = { prepare: DB.prepare, batch: async queries => {
+    calls.push(queries.length);
+    return (await DB.batch(queries)).map(result => ({ ...result, meta: { rows_read: 10, rows_written: 0, duration: 1 } }));
+  } };
+  const get = async (view, extra = {}) => {
+    const params = new URLSearchParams({ view, ...extra });
+    const response = await worker.fetch(request(`/__analytics/report?${params}`, { headers: { Authorization: `Bearer ${SECRET}` } }), { DB: measured, READ_TOKEN: SECRET }, context());
+    assert.equal(response.status, 200);
+    return response.json();
+  };
+  for (const excludePersonal of ["0", "1"]) {
+    const full = await get("all", { excludePersonal });
+    assert.equal(calls.at(-1), 19);
+    const plans = { summary: ["totals", "personalActivity"], overview: ["items"], papers: ["items"], outbound: ["items"],
+      geography: ["countries", "cities"], sources: ["referrers"], devices: ["devices"], states: ["states"], counties: ["counties", "countyViews"], countries: ["countryViews"] };
+    for (const [view, fields] of Object.entries(plans)) {
+      const part = await get(view, { excludePersonal });
+      assert.equal(calls.at(-1), fields.length, view);
+      assert.equal(part.queryUsage.queryCount, fields.length);
+      assert.equal(part.queryUsage.rowsRead, fields.length * 10);
+      assert.equal(part.breakdowns, undefined);
+      for (const field of fields) assert.deepEqual(part[field], field === "items" ? full.items.filter(row => row.section === (view === "outbound" ? "outbound" : "main")) : full[field], `${view}:${field}`);
+    }
+    for (const item of full.items) {
+      const detail = await get("detail", { excludePersonal, section: item.section, name: item.name });
+      assert.equal(calls.at(-1), 3);
+      assert.deepEqual(detail.items, [item]);
+      assert.deepEqual(detail.breakdowns, full.breakdowns.filter(row => row.section === item.section && row.name === item.name));
+      assert.equal(detail.countries, undefined);
+      assert.equal(detail.totals, undefined);
+    }
+  }
+  const empty = await get("detail", { section: "main", name: "/never-viewed.pdf" });
+  assert.deepEqual(empty.items, []); assert.deepEqual(empty.breakdowns, []);
+  for (const query of ["view=constructor", "view=unknown", "view=detail", "view=detail&section=wrong&name=x"]) {
+    const before = calls.length;
+    const response = await worker.fetch(request(`/__analytics/report?${query}`, { headers: { Authorization: `Bearer ${SECRET}` } }), { DB: measured, READ_TOKEN: SECRET }, context());
+    assert.equal(response.status, 400); assert.equal(calls.length, before);
+  }
+});
+
+test("profile index preserves records and is used by both history and IP queries", async () => {
+  const { DB, db } = database(false), now = Math.floor(Date.now() / 1000);
+  for (let i = 0; i < 100; i++) db.prepare("INSERT INTO events(id,occurred_at,kind,path,visitor_hash) VALUES(?,?,'page_view','/',?)").run(String(i), now - i, i.toString(16).padStart(64, "0"));
+  const before = db.prepare("SELECT * FROM events ORDER BY rowid").all();
+  db.exec(readFileSync(new URL("../migrations/0009_user_history_index.sql", import.meta.url), "utf8"));
+  assert.deepEqual(db.prepare("SELECT * FROM events ORDER BY rowid").all(), before);
+  const plans = [];
+  const inspected = { prepare: sql => ({ bind: (...params) => {
+    plans.push(db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all(...params));
+    return DB.prepare(sql).bind(...params);
+  } }) };
+  const response = await worker.fetch(request(`/__analytics/report?view=users&user=${"0".repeat(24)}`, { headers: { Authorization: `Bearer ${SECRET}` } }), { DB: inspected, READ_TOKEN: SECRET }, context());
+  assert.equal(response.status, 200);
+  const value = await response.json();
+  assert.equal(value.queryUsage.queryCount, 2);
+  assert.equal(plans.length, 2);
+  assert.ok(plans.every(plan => plan.some(row => row.detail.includes("events_user_history"))));
 });

@@ -6,6 +6,7 @@ import { userReport } from "./users.mjs";
 import { TIME_ZONE, pacificDate, pacificMidnight, pacificDaily } from "./time.mjs";
 import { estimatedCounty } from "./geography.mjs";
 import { connectingIp } from "./ip.mjs";
+import { QUERY_NAMES, REPORT_PLANS, queryUsage } from "./report-plan.mjs";
 
 // Configuration and bounded, privacy-preserving normalization.
 const HOSTS = new Set(["www.andrewcwmyers.com", "andrewcwmyers.com"]);
@@ -176,11 +177,19 @@ async function report(request, env) {
     const value = await userReport(env.DB, url, dates, where, personal, excludePersonal);
     return json(value, value.error ? 400 : 200);
   }
-  const query = (sql) => env.DB.prepare(sql).bind(dates.from, dates.until);
+  const view = url.searchParams.get("view") || "all";
+  if (!Object.hasOwn(REPORT_PLANS, view)) return json({ error: "Invalid report view" }, 400);
+  const section = url.searchParams.get("section") || "", name = url.searchParams.get("name") || "";
+  if (view === "detail" && (!["main", "outbound"].includes(section) || !name || name.length > 2048)) return json({ error: "Invalid detail query" }, 400);
+  const mainPath = "CASE WHEN path IN ('/index.html', '/index') THEN '/' ELSE path END";
+  const scope = view === "detail" ? section : view === "outbound" ? "outbound" : ["papers", "overview"].includes(view) ? "main" : "";
+  const itemFilter = scope === "outbound" ? " AND kind = 'outbound_click'" : scope === "main" ? " AND kind IN ('page_view','pdf_request')" : "";
+  const detailFilter = view === "detail" ? ` AND ${section === "outbound" ? "target" : mainPath} = ?` : "";
+  const query = (sql) => ({ sql, params: [dates.from, dates.until, ...(view === "detail" && sql.startsWith("WITH activity AS") ? [name] : [])] });
   const activity = `WITH activity AS (
     SELECT *, CASE WHEN kind = 'outbound_click' THEN 'outbound' ELSE 'main' END AS section,
       CASE WHEN kind = 'outbound_click' THEN target WHEN path IN ('/index.html', '/index') THEN '/' ELSE path END AS name
-    FROM events WHERE ${where} AND bot = 0 AND kind IN ('page_view', 'pdf_request', 'outbound_click')
+    FROM events WHERE ${where} AND bot = 0 AND kind IN ('page_view', 'pdf_request', 'outbound_click')${itemFilter}${detailFilter}
   )`;
   const counts = `COUNT(*) AS count, COUNT(DISTINCT NULLIF(visitor_hash, '')) AS visitors,
     COUNT(NULLIF(visitor_hash, '')) AS identifiedRequests, COUNT(*) - COUNT(NULLIF(visitor_hash, '')) AS unidentifiedRequests`;
@@ -195,7 +204,7 @@ async function report(request, env) {
     ${dimension === "campaigns" ? "WHERE source != '' OR medium != '' OR campaign != ''" : ""}
     GROUP BY section, name, ${value}, ${detail}`).join(" UNION ALL ");
   // Fixed aggregate queries; user histories use the private view above.
-  const results = await env.DB.batch([
+  const queries = [
     query(`SELECT kind, bot, ${counts} FROM events WHERE ${where} GROUP BY kind, bot`),
     query(`SELECT strftime('%Y-%m-%dT%H:00:00Z', occurred_at, 'unixepoch') AS hour, kind, COUNT(*) AS count FROM events WHERE ${where} AND bot = 0 GROUP BY hour, kind ORDER BY hour`),
     query(`SELECT CASE WHEN kind = 'pdf_click' THEN target ELSE path END AS name, kind, COUNT(*) AS count FROM events WHERE ${where} AND bot = 0 AND kind IN ('pdf_request','pdf_click','page_view') GROUP BY name, kind ORDER BY count DESC LIMIT 100`),
@@ -229,10 +238,15 @@ async function report(request, env) {
     ) SELECT section, name, dimension, value, detail, count, visitors, identifiedRequests, unidentifiedRequests FROM ranked WHERE dimension = 'countries' OR rank <= 50 ORDER BY section, name, rank`),
     query(`SELECT city AS name, country, region, kind, COUNT(*) AS count FROM events WHERE ${where} AND bot = 0 AND kind IN ('page_view','pdf_request','outbound_click') GROUP BY city, country, region, kind ORDER BY count DESC`),
     query(`SELECT country AS name, ${counts} FROM events WHERE ${where} AND bot = 0 AND kind IN ('page_view','pdf_request') GROUP BY country ORDER BY count DESC`),
-  ]);
+  ];
+  const selected = queries.map((entry, index) => ({ ...entry, index, name: QUERY_NAMES[index] }))
+    .filter(entry => REPORT_PLANS[view].includes(entry.name));
+  const executed = await env.DB.batch(selected.map(entry => env.DB.prepare(entry.sql).bind(...entry.params)));
+  const results = queries.map(() => ({ results: [] }));
+  selected.forEach((entry, index) => { results[entry.index] = executed[index]; });
   const keys = ["totals", "daily", "pages", "outbound", "countries", "referrers", "devices", "campaigns"];
   results[1].results = pacificDaily(results[1].results);
-  return json({ generatedAt: new Date().toISOString(), timeZone: TIME_ZONE, start: dates.start, end: dates.end,
+  const value = { generatedAt: new Date().toISOString(), timeZone: TIME_ZONE, start: dates.start, end: dates.end,
     ...Object.fromEntries(keys.map((key, i) => [key, results[i].results])),
     pdfVisitors: results[8].results[0], pdfVisitorsByPath: results[9].results,
     documents, items: results[10].results, breakdowns: [...results[11].results, ...results[16].results],
@@ -244,7 +258,11 @@ async function report(request, env) {
     gaPropertyId: "465165532", gaMeasurementId: env.GA_MEASUREMENT_ID, gaPdfForwarding: Boolean(env.GA_API_SECRET && env.GA_MEASUREMENT_ID),
     notes: ["PDF requests are retrieval starts, not confirmed reads. Same-browser/same-PDF retrievals within five seconds are counted once. Nonzero byte ranges are excluded; unidentified retries can still count twice.",
       "Distinct visitors are estimated browsers, not identified people, using a random 30-day cookie. Only its hash is stored in D1. Old requests have no visitor identifier and cannot be deduplicated.",
-      "Marked personal activity can be filtered from all report aggregates. Privacy opt-outs are never recorded. IP addresses are retained privately and shown only in authenticated user profiles; no fingerprints are created."] });
+      "Marked personal activity can be filtered from all report aggregates. Privacy opt-outs are never recorded. IP addresses are retained privately and shown only in authenticated user profiles; no fingerprints are created."] };
+  const fields = new Set(["generatedAt", "timeZone", "start", "end", "excludePersonal", "documents", "gaPropertyId", "gaMeasurementId", "gaPdfForwarding", ...REPORT_PLANS[view]]);
+  return json({ ...(view === "all" ? value : Object.fromEntries(Object.entries(value).filter(([key]) => fields.has(key)))),
+    view, ...(view === "detail" ? { section, name } : {}),
+    queryUsage: queryUsage(selected.map((entry, index) => [entry.name, executed[index]])) });
 }
 
 // Public requests stay on the GitHub Pages origin; Cloudflare routes intercept them.

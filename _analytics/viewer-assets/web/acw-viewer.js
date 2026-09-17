@@ -4,6 +4,9 @@
   const path = document.querySelector('meta[name="acw-pdf-path"]').content;
   const tracking = document.querySelector('meta[name="acw-tracking"]').content === "true";
   const rawURL = path + "?__pdf=raw";
+  const diagnosticValue = document.querySelector('meta[name="acw-pdf-diagnostic"]')?.content || "";
+  const diagnosticId = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(diagnosticValue) ? diagnosticValue : "";
+  const diagnosticStages = new Set();
   let rendered = false, starting = false, tracker = null;
   const queuedDownloads = [];
   let attempts = 0, retryTimer, id;
@@ -14,11 +17,27 @@
       !(document.cookie || "").split(";").some(part => part.trim() === "__Host-acw_ignore=1");
   }
 
+  function diagnose(stage, code = "", status = 0) {
+    if (!diagnosticId || !allowed() || diagnosticStages.has(stage)) return;
+    diagnosticStages.add(stage);
+    const send = async (attempt = 0) => {
+      if (!allowed()) return;
+      try {
+        const response = await fetch("/__analytics/pdf-diagnostic", { method: "POST", credentials: "same-origin",
+          headers: { "Content-Type": "text/plain" }, keepalive: true,
+          body: JSON.stringify({ id: diagnosticId, stage, code, status }) });
+        // The server's non-blocking route insert may still be finishing.
+        if ((response.status === 404 || response.status >= 500) && attempt < 2) setTimeout(() => send(attempt + 1), 1000 * (attempt + 1));
+      } catch { if (attempt < 2) setTimeout(() => send(attempt + 1), 1000 * (attempt + 1)); }
+    };
+    void send();
+  }
+
   async function start() {
     if (!rendered || starting || tracker || attempts >= 3 || !allowed() || document.visibilityState !== "visible") return;
     starting = true;
     attempts++;
-    id ||= crypto.randomUUID();
+    id ||= diagnosticId || crypto.randomUUID();
     const query = new URL(location.href).searchParams;
     const campaign = key => (query.get(key) || "").replace(/[^a-zA-Z0-9_. -]/g, "").slice(0, 100);
     let referrer = "";
@@ -31,11 +50,12 @@
         body: JSON.stringify({ kind: "pdf_view", id, path, referrer,
           source: campaign("utm_source"), medium: campaign("utm_medium"), campaign: campaign("utm_campaign") }) });
       if (response.ok && allowed()) {
-        tracker = window.acwStartEngagement({ id, path, kind: "pdf_view" });
+        try { tracker = window.acwStartEngagement({ id, path, kind: "pdf_view" }); }
+        catch { diagnose("error", "engagement_start_error"); return; }
         for (const at of queuedDownloads) tracker.download(at);
         queuedDownloads.length = 0;
-      }
-    } catch {} finally {
+      } else if (!response.ok && attempts >= 3) diagnose("error", "tracking_http", response.status);
+    } catch { if (attempts >= 3) diagnose("error", "tracking_network"); } finally {
       clearTimeout(timeout);
       starting = false;
       if (!tracker && attempts < 3 && allowed()) retryTimer = setTimeout(start, 1000 * 2 ** (attempts - 1));
@@ -87,17 +107,19 @@
     });
     app.initializedPromise.then(() => {
       app.eventBus.on("pagerendered", event => {
-        if (event.error) { showError(); return; }
+        if (event.error) { showError("render_error"); return; }
         if (event.cssTransform) return;
         rendered = true;
+        diagnose("rendered");
         void start();
       });
       app.eventBus.on("download", onDownload);
-      app.eventBus.on("documenterror", showError);
-    }).catch(showError);
+      app.eventBus.on("documenterror", () => showError("document_error"));
+    }).catch(() => showError("initialization_error"));
   }
 
-  function showError() {
+  function showError(code) {
+    diagnose("error", code);
     const message = document.querySelector("#acwPdfError");
     if (message) message.hidden = false;
     else document.addEventListener("DOMContentLoaded", showError, { once: true });
@@ -105,10 +127,10 @@
   }
 
   function onScriptError(event) {
-    if (event.target?.tagName === "SCRIPT" && event.target.src.includes("/__pdfjs/")) showError();
+    if (event.target?.tagName === "SCRIPT" && /\/__(?:pdfjs|analytics)\//.test(event.target.src)) showError("script_error");
   }
 
-  document.addEventListener("webviewerloaded", configure, { once: true });
+  document.addEventListener("webviewerloaded", () => { try { configure(); } catch { showError("initialization_error"); } }, { once: true });
   document.addEventListener("visibilitychange", start);
   window.addEventListener("pageshow", start);
   window.addEventListener("pagehide", () => clearTimeout(retryTimer));
@@ -116,4 +138,5 @@
   document.addEventListener("drop", blockLocalFile, { capture: true });
   document.addEventListener("change", blockLocalFile, { capture: true });
   window.addEventListener("error", onScriptError, { capture: true });
+  diagnose("started");
 })();

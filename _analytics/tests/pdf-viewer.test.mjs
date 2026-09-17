@@ -15,13 +15,13 @@ class Target {
 
 async function settle() { for (let i = 0; i < 12; i++) await Promise.resolve(); }
 
-async function bootstrap({ tracking = true, privacy = {}, cookie = "", visible = true } = {}) {
+async function bootstrap({ tracking = true, privacy = {}, cookie = "", visible = true, diagnosticId = "" } = {}) {
   const script = await readFile(asset("web/acw-viewer.js"), "utf8");
   const document = new Target(), window = new Target(), bus = new Target();
-  const requests = [], starts = [], opens = [], options = {}, timers = new Map(), errorMessage = { hidden: true };
+  const requests = [], diagnostics = [], starts = [], opens = [], options = {}, timers = new Map(), errorMessage = { hidden: true };
   let resolveStart, downloads = 0;
   Object.assign(document, { visibilityState: visible ? "visible" : "hidden", cookie,
-    referrer: "https://ref.example/sensitive?email=hidden", querySelector: name => name === "#acwPdfError" ? errorMessage : ({ content: name.includes("acw-pdf-path") ? "/paper.pdf" : String(tracking) }) });
+    referrer: "https://ref.example/sensitive?email=hidden", querySelector: name => name === "#acwPdfError" ? errorMessage : ({ content: name.includes("acw-pdf-diagnostic") ? diagnosticId : name.includes("acw-pdf-path") ? "/paper.pdf" : String(tracking) }) });
   bus.on = bus.addEventListener;
   window.PDFViewerApplication = { initializedPromise: Promise.resolve(), eventBus: bus, pdfDocument: {}, toolbar: {}, secondaryToolbar: {},
     open(args) { assert.equal(this, window.PDFViewerApplication); opens.push(args); return "opened"; } };
@@ -31,11 +31,11 @@ async function bootstrap({ tracking = true, privacy = {}, cookie = "", visible =
     location: { href: "https://site.example/paper.pdf?file=evil.pdf&utm_source=test%3C%3E#page=2&zoom=125" },
     crypto: { randomUUID: () => "pdf-view-id" },
     setTimeout: (fn, ms) => { timers.set(ms, fn); return ms; }, clearTimeout: id => timers.delete(id),
-    fetch: async (url, init) => { requests.push({ url, ...init }); return new Promise(resolve => { resolveStart = resolve; }); },
+    fetch: async (url, init) => { if (url.endsWith("pdf-diagnostic")) { diagnostics.push(JSON.parse(init.body)); return { ok: true, status: 204 }; } requests.push({ url, ...init }); return new Promise(resolve => { resolveStart = resolve; }); },
   });
   document.emit("webviewerloaded");
   await settle();
-  return { document, window, bus, requests, starts, opens, options, timers, errorMessage,
+  return { document, window, bus, requests, diagnostics, starts, opens, options, timers, errorMessage,
     get downloads() { return downloads; },
     async acknowledge(ok = true) { resolveStart({ ok }); await settle(); },
   };
@@ -51,6 +51,26 @@ test("HTML navigations work without Fetch Metadata while byte clients stay raw",
     { Accept: "text/html", "Sec-Fetch-Dest": "empty" }, { Accept: "text/html", "Sec-Fetch-Dest": "embed" },
     { Accept: "text/html", "Sec-Fetch-Mode": "cors" }]) assert.equal(check(headers), false, JSON.stringify(headers));
   assert.equal(check({ Accept: "text/html" }, "HEAD"), false);
+});
+
+test("diagnostics report bounded startup/render/error codes, reuse route ID, and honor privacy", async () => {
+  const diagnosticId = "11111111-1111-4111-8111-111111111111";
+  const h = await bootstrap({ diagnosticId });
+  assert.deepEqual(h.diagnostics.map(row => row.stage), ["started"]);
+  h.bus.emit("pagerendered");
+  h.bus.emit("pagerendered");
+  assert.deepEqual(h.diagnostics.map(row => row.stage), ["started", "rendered"]);
+  assert.equal(JSON.parse(h.requests[0].body).id, diagnosticId);
+  h.bus.emit("documenterror", { message: "PRIVATE STACK NOT TO SEND" });
+  h.bus.emit("documenterror", {});
+  assert.deepEqual(h.diagnostics.map(row => row.stage), ["started", "rendered", "error"]);
+  assert.equal(h.diagnostics[2].code, "document_error");
+  assert.doesNotMatch(JSON.stringify(h.diagnostics), /PRIVATE|ref.example/);
+  for (const settings of [{ tracking: false }, { privacy: { doNotTrack: "1" } }, { privacy: { globalPrivacyControl: true } }, { cookie: "__Host-acw_ignore=1" }]) {
+    const off = await bootstrap({ diagnosticId, ...settings });
+    off.bus.emit("pagerendered"); off.bus.emit("documenterror");
+    assert.equal(off.diagnostics.length, 0);
+  }
 });
 
 test("viewer marks only its own raw fetch and preserves PDF.js options and receiver", async () => {

@@ -2,6 +2,7 @@
 // Called only after the report endpoint's bearer, date and personal-filter checks.
 import { queryUsage } from "./report-plan.mjs";
 import { userReading, historyReading } from "./engagement.mjs";
+import { pdfDiagnostics } from "./pdf-diagnostics.mjs";
 
 export async function userReport(db, url, dates, personal, excludePersonal, page = "") {
   const user = url.searchParams.get("user") || "";
@@ -21,7 +22,7 @@ export async function userReport(db, url, dates, personal, excludePersonal, page
       OR id IN (SELECT session_id FROM reading_hours WHERE hour >= ?1 AND hour < ?2))
     AND duplicate_of = '' ${excludePersonal ? `AND NOT ${personal}` : ""}
     AND bot = 0 AND visitor_hash != '' AND kind IN ('page_view', 'pdf_request', 'outbound_click') ${cohort} ${liveFilter}`;
-  let rows, addresses = [], unrecordedIpEvents = 0;
+  let rows, addresses = [], unrecordedIpEvents = 0, diagnostics, diagnosticsMore = false, diagnosticsUnavailable = false;
   const measured = [];
   if (user) {
     rows = await db.prepare(`SELECT id, occurred_at AS time, occurred_at < ?1 AS continued, kind,
@@ -39,6 +40,12 @@ export async function userReport(db, url, dates, personal, excludePersonal, page
     addresses = ipRows.results.filter(row => row.address);
     unrecordedIpEvents = ipRows.results.find(row => !row.address)?.events || 0;
     measured.push(["userHistory", rows], ["userAddresses", ipRows]);
+    try {
+      const diagnosticReport = await pdfDiagnostics(db, dates, excludePersonal, user);
+      diagnostics = diagnosticReport.rows;
+      diagnosticsMore = diagnosticReport.nextOffset !== null;
+      measured.push(diagnosticReport.measured);
+    } catch { diagnosticsUnavailable = true; }
   } else {
     rows = await db.prepare(`WITH activity AS (
       SELECT visitor_hash, occurred_at, kind, path, country, region, city, county, county_fips, browser, device, os,
@@ -83,6 +90,6 @@ export async function userReport(db, url, dates, personal, excludePersonal, page
   }
   return { start: dates.start, end: dates.end, excludePersonal, page, live, user, offset, limit,
     ...(engagement ? { engagement } : {}),
-    ...(user ? { addresses, unrecordedIpEvents } : {}),
+    ...(user ? { addresses, unrecordedIpEvents, diagnostics, diagnosticsMore, diagnosticsUnavailable } : {}),
     queryUsage: queryUsage(measured), rows: visible, nextOffset: rows.results.length > limit ? offset + limit : null };
 }

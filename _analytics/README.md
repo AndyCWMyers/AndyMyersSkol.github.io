@@ -106,6 +106,34 @@ without Fetch Metadata do not count the bytes and rendered view twice. This mark
 only suppresses redundant analytics, not access control. See
 `PDF-VIEWER-CONTRACT.md` for the browser/Worker protocol.
 
+PDF routing diagnostics are stored separately in `pdf_diagnostics` (migration
+0013), never in event counts, engagement totals or GA4. Initial external known-PDF
+GETs record viewer/raw routing reason, response status, and bounded User-Agent,
+Accept, Sec-Fetch-Dest/Mode and Range headers. Cookies, authorization headers,
+query strings, arbitrary error messages and stacks are not stored. Internal
+PDF.js byte requests and nonzero continuation ranges are excluded. A dedicated
+60-per-IP/minute diagnostic limit bounds both inserts and browser signals without
+blocking content or consuming the ordinary event collector's limit.
+
+The viewer reports script startup, first rendered page, and at most one coded
+error per load. A server-generated ID ties these to the initial request and the
+confirmed viewer session; writes require the matching visitor cookie and origin.
+Signals have at most two retries for route-insert races or transient failures;
+duplicate updates do not rewrite rows. A normal tracked load adds one diagnostic
+insert and two updates (plus SQLite index costs), not periodic heartbeat writes.
+Missing signals remain unknown: they can mean blocking, unsupported JavaScript,
+an early exit, rate limiting, or a failed diagnostic request. A client-reported
+User-Agent can suggest a tool but is not verified identity.
+
+Profiles expose the latest 50 diagnostics in the selected period, including
+requests without a counted viewer event. Authenticated `view=pdf_diagnostics`
+also supports `user`, `page` and 50-row `offset` pagination for investigation of
+requests that never established any user activity. Diagnostic queries are indexed
+and run only for profiles or explicit diagnostic reports. Retention is 30 days,
+with opportunistic cleanup on future inserts; there is no recurring cleanup job.
+Privacy opt-outs suppress inserts and signals; personal-activity filters apply.
+Historical requests have no diagnostic headers and are not backfilled.
+
 ## Own Visits And Distinct Browsers
 
 Migration `0008_client_metadata.sql` adds OS family (from the request user agent)

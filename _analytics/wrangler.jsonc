@@ -19,6 +19,7 @@
     { "pattern": "andrewcwmyers.com/*", "zone_name": "andrewcwmyers.com" }
   ],
   "ratelimits": [
-    { "name": "COLLECT_LIMIT", "namespace_id": "1001", "simple": { "limit": 60, "period": 60 } }
+    { "name": "COLLECT_LIMIT", "namespace_id": "1001", "simple": { "limit": 60, "period": 60 } },
+    { "name": "PDF_DIAGNOSTIC_LIMIT", "namespace_id": "1002", "simple": { "limit": 60, "period": 60 } }
   ]
 }

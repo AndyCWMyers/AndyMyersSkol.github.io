@@ -30,7 +30,8 @@ export function createPreviewServer() {
         return;
       }
       if (url.pathname === "/preview.pdf" && url.searchParams.get("__pdf") !== "raw") {
-        const rendered = pdfViewerResponse("/preview.pdf", "", url.searchParams.get("tracking") !== "off");
+        const rendered = pdfViewerResponse("/preview.pdf", "", url.searchParams.get("tracking") !== "off",
+          url.searchParams.get("diagnostics") === "on" ? crypto.randomUUID() : "");
         response.writeHead(rendered.status, Object.fromEntries(rendered.headers)).end(await rendered.text());
         return;
       }

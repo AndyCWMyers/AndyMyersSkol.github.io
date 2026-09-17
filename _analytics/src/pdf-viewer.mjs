@@ -1,17 +1,23 @@
 import viewerHTML from "./pdf-viewer-template.mjs";
 
 export function isPdfNavigation(request) {
-  if (request.method !== "GET" || request.headers.has("Range")) return false;
+  return pdfNavigationReason(request) === "viewer";
+}
+
+export function pdfNavigationReason(request) {
+  if (request.method !== "GET") return "method";
+  if (request.headers.has("Range")) return "range_request";
   const destination = request.headers.get("Sec-Fetch-Dest"), mode = request.headers.get("Sec-Fetch-Mode");
-  if (destination && !["document", "iframe"].includes(destination)) return false;
-  if (mode && mode !== "navigate") return false;
+  if (destination && !["document", "iframe"].includes(destination)) return "non_document_destination";
+  if (mode && mode !== "navigate") return "non_navigation_mode";
   // Older browsers may omit Fetch Metadata. Explicit HTML acceptance is sufficient.
-  return (request.headers.get("Accept") || "").split(",").some(value => {
+  const html = (request.headers.get("Accept") || "").split(",").some(value => {
     const [type, ...parameters] = value.trim().toLowerCase().split(";");
     const quality = parameters.find(parameter => parameter.trim().startsWith("q="));
     const q = quality ? Number(quality.trim().slice(2)) : 1;
     return type.trim() === "text/html" && q > 0 && q <= 1;
   });
+  return html ? "viewer" : "html_not_accepted";
 }
 
 function escapeAttribute(value) {
@@ -29,12 +35,14 @@ function validPath(path) {
 
 // The Worker owns the known-document allowlist and chooses browser GETs only.
 // measurementId is intentionally unused: the Worker owns the single GA PDF view.
-export function pdfViewerResponse(path, measurementId, trackingEnabled = true) {
+export function pdfViewerResponse(path, measurementId, trackingEnabled = true, diagnosticId = "") {
   if (!validPath(path)) throw new TypeError("Expected a canonical, same-origin PDF pathname");
+  if (diagnosticId && !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(diagnosticId)) throw new TypeError("Invalid diagnostic ID");
   const rawLink = `<a href="${escapeAttribute(path + "?__pdf=raw")}">Open original PDF</a>`;
   const head = `<base href="/__pdfjs/web/" />
     <meta name="acw-pdf-path" content="${escapeAttribute(path)}" />
     <meta name="acw-tracking" content="${trackingEnabled ? "true" : "false"}" />
+    <meta name="acw-pdf-diagnostic" content="${trackingEnabled ? diagnosticId : ""}" />
     ${trackingEnabled ? '<script src="/__analytics/engagement.js"></script>' : ""}
     <script src="acw-viewer.js"></script>`;
   const html = viewerHTML

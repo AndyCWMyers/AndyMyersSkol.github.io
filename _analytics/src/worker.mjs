@@ -10,8 +10,9 @@ import { QUERY_NAMES, REPORT_PLANS, queryUsage } from "./report-plan.mjs";
 import { headlineSummary } from "./summary.mjs";
 import { startReading, saveReading, readingItems, addReadingItems } from "./engagement.mjs";
 import engagementSource from "./engagement-client.mjs";
-import { pdfViewerResponse, isPdfNavigation } from "./pdf-viewer.mjs";
+import { pdfViewerResponse, pdfNavigationReason } from "./pdf-viewer.mjs";
 import { readUsage } from "./usage.mjs";
+import { recordPdfDiagnostic, validDiagnosticSignal, updatePdfDiagnostic, pdfDiagnostics } from "./pdf-diagnostics.mjs";
 
 // Configuration and bounded, privacy-preserving normalization.
 const HOSTS = new Set(["www.andrewcwmyers.com", "andrewcwmyers.com"]);
@@ -126,6 +127,25 @@ function background(ctx, promise) {
   ctx.waitUntil(promise.catch(() => console.warn("Analytics write failed")));
 }
 
+async function recordRoute(request, env, data) {
+  if (!env.DB || optedOut(request)) return;
+  if (env.PDF_DIAGNOSTIC_LIMIT && !(await env.PDF_DIAGNOSTIC_LIMIT.limit({ key: request.headers.get("CF-Connecting-IP") || "unknown" })).success) return;
+  await recordPdfDiagnostic(env.DB, request, data);
+}
+
+async function diagnosticSignal(request, env) {
+  if (request.method !== "POST") return json({ error: "Method not allowed" }, 405);
+  if (request.headers.get("Origin") !== new URL(request.url).origin) return json({ error: "Forbidden" }, 403);
+  if (optedOut(request)) return new Response(null, { status: 204 });
+  if (!env.DB) return json({ error: "Unavailable" }, 503);
+  if (env.PDF_DIAGNOSTIC_LIMIT && !(await env.PDF_DIAGNOSTIC_LIMIT.limit({ key: request.headers.get("CF-Connecting-IP") || "unknown" })).success) return json({ error: "Rate limited" }, 429);
+  let body;
+  try { body = await boundedJson(request, 512); } catch { return json({ error: "Invalid diagnostic" }, 400); }
+  if (!validDiagnosticSignal(body)) return json({ error: "Invalid diagnostic" }, 400);
+  const status = await updatePdfDiagnostic(env.DB, body, await visitorHash(visitorIdentity(request).value));
+  return new Response(null, { status, headers: { "Cache-Control": "no-store" } });
+}
+
 export function initialPdfRequest(request, response) {
   if (request.method !== "GET" || ![200, 206, 304].includes(response.status)) return false;
   const range = request.headers.get("Range");
@@ -205,6 +225,13 @@ async function report(request, env) {
   const period = `occurred_at >= ? AND occurred_at < ? AND duplicate_of = ''${page ? " AND CASE WHEN path IN ('/index','/index.html') THEN '/' ELSE path END = ?3" : ""}`;
   const personal = "(is_personal = 1 OR visitor_hash IN (SELECT visitor_hash FROM personal_visitors))";
   const where = `${period}${excludePersonal ? ` AND NOT ${personal}` : ""}`;
+  if (url.searchParams.get("view") === "pdf_diagnostics") {
+    const user = url.searchParams.get("user") || "", offsetText = url.searchParams.get("offset") || "0";
+    if ((user && !/^[a-f0-9]{24}$/.test(user)) || !/^\d{1,7}$/.test(offsetText)) return json({ error: "Invalid diagnostic query" }, 400);
+    const value = await pdfDiagnostics(env.DB, dates, excludePersonal, user, Number(offsetText), page);
+    return json({ start: dates.start, end: dates.end, excludePersonal, user, offset: Number(offsetText), rows: value.rows,
+      nextOffset: value.nextOffset, queryUsage: queryUsage([value.measured]) });
+  }
   if (["users", "live"].includes(url.searchParams.get("view"))) {
     const value = await userReport(env.DB, url, dates, personal, excludePersonal, page);
     return json(value, value.error ? 400 : 200);
@@ -335,6 +362,7 @@ export default {
     });
     if (url.pathname === "/__analytics/event") return collect(request, env, ctx).catch(() => json({ error: "Analytics unavailable" }, 503));
     if (url.pathname === "/__analytics/engagement") return engagement(request, env).catch(() => json({ error: "Analytics unavailable" }, 503));
+    if (url.pathname === "/__analytics/pdf-diagnostic") return diagnosticSignal(request, env).catch(() => json({ error: "Diagnostics unavailable" }, 503));
     if (url.pathname === "/__analytics/engagement.js") return new Response(engagementSource, { headers: {
       "Content-Type": "application/javascript", "Cache-Control": "public, max-age=300", "X-Content-Type-Options": "nosniff" } });
     if (url.pathname === "/__analytics/client.js") return new Response(`(${clientSource})(${JSON.stringify(env.GA_MEASUREMENT_ID || "")});`, { headers: {
@@ -343,9 +371,15 @@ export default {
     // Public GET/HEAD content can bypass a tracking-code exception. Private APIs cannot.
     if (request.method === "GET" || request.method === "HEAD") ctx.passThroughOnException?.();
     const pdfPath = /\.pdf$/i.test(url.pathname) && documents.some(document => document.name === url.pathname);
-    if (pdfPath && isPdfNavigation(request) && !url.searchParams.has("__pdf") && !metadata(request).bot) {
-      const viewer = pdfViewerResponse(url.pathname, env.GA_MEASUREMENT_ID, !optedOut(request));
-      if (!optedOut(request)) viewer.headers.append("Set-Cookie", visitorIdentity(request).cookie);
+    const pdfReason = !pdfPath ? "" : url.searchParams.has("__pdf") ? "explicit_raw" : metadata(request).bot ? "known_bot" : pdfNavigationReason(request);
+    if (pdfPath && pdfReason === "viewer") {
+      const visitor = !optedOut(request) ? visitorIdentity(request) : null;
+      const id = visitor ? crypto.randomUUID() : "";
+      const viewer = pdfViewerResponse(url.pathname, env.GA_MEASUREMENT_ID, Boolean(visitor), id);
+      if (visitor) {
+        viewer.headers.append("Set-Cookie", visitor.cookie);
+        background(ctx, recordRoute(request, env, { id, path: url.pathname, reason: pdfReason, status: 200, visitorId: visitor.value }));
+      }
       return viewer;
     }
     const response = env.ORIGIN ? await env.ORIGIN.fetch(request) : await fetch(request);
@@ -355,12 +389,20 @@ export default {
       (request.headers.get("Sec-Fetch-Dest") === "empty" && request.headers.get("Sec-Fetch-Site") === "same-origin")
     )) return response;
     if (optedOut(request) || request.method !== "GET") return response;
+    const diagnosticId = pdfPath ? crypto.randomUUID() : undefined;
+    const pdfInfo = pdfPath ? metadata(request) : null;
+    const pdfVisitor = pdfInfo && !pdfInfo.bot ? visitorIdentity(request) : null;
+    // Skip continuation byte ranges and the viewer's internal fetches above.
+    if (pdfPath && (!request.headers.has("Range") || /^bytes=0-\d*$/.test(request.headers.get("Range")))) {
+      background(ctx, recordRoute(request, env, { id: diagnosticId, path: url.pathname, reason: pdfReason,
+        status: response.status, visitorId: pdfVisitor?.value, bot: pdfInfo.bot }));
+    }
     const type = response.headers.get("Content-Type") || "";
     if ((type.includes("application/pdf") || (response.status === 304 && /\.pdf$/i.test(url.pathname))) && initialPdfRequest(request, response)) {
       const info = metadata(request);
-      const visitor = info.bot ? null : visitorIdentity(request);
+      const visitor = pdfVisitor || (info.bot ? null : visitorIdentity(request));
       const identity = visitor && env.GA_API_SECRET && env.GA_MEASUREMENT_ID ? pdfIdentity(request) : null;
-      background(ctx, record(request, env, { kind: "pdf_request", path: url.pathname, status: response.status, visitorId: visitor?.value })
+      background(ctx, record(request, env, { id: diagnosticId, kind: "pdf_request", path: url.pathname, status: response.status, visitorId: visitor?.value })
         .then(counted => counted && identity ? sendPdfEvent(request, env, identity, info) : undefined));
       if (visitor) {
         const tracked = new Response(response.body, response);

@@ -6,7 +6,7 @@ and private engagement reports.
 ## Routes and exports
 
 - `src/pdf-viewer.mjs` exports `pdfViewerResponse(path, measurementId,
-  trackingEnabled = true): Response`. The Worker must allowlist canonical PDF
+  trackingEnabled = true, diagnosticId = ''): Response`. The Worker must allowlist canonical PDF
   paths and invoke it only for browser GET navigation. Invalid paths throw.
   `measurementId` is reserved and intentionally unused: no browser GA event.
 - `isPdfNavigation(request)` accepts GET requests explicitly accepting HTML,
@@ -36,11 +36,16 @@ and private engagement reports.
 ## View and engagement protocol
 
 On the first successful page render while visible, the viewer POSTs
-`/__analytics/event` with `{kind:'pdf_view', id:crypto.randomUUID(), path,
+`/__analytics/event` with `{kind:'pdf_view', id, path,
 referrer, source, medium, campaign}`. Referrer is an origin or empty string;
 campaigns use the existing sanitized UTM rules. A single ID survives retries,
 focus changes, and BFCache. The Worker creates the view row and engagement
 session with that same ID. No synthetic GA page view is emitted by the viewer.
+The ID comes from the server's diagnostic meta tag when present, otherwise a
+fresh random UUID. Diagnostic requests to `/__analytics/pdf-diagnostic` report
+startup, rendering, and at most one fixed error code. They require the matching
+visitor cookie, respect privacy opt-outs, and never create view events. The
+separate diagnostic row records the routing decision even without JavaScript.
 Private history reports distinguish `untracked` (no session), `no_updates`
 (session without accepted checkpoints), `outside_period` (checkpoints only outside
 the selected dates), and `tracked` (checkpoints in the selected dates). Time and
@@ -113,6 +118,7 @@ node --test tests/pdf-viewer-browser.test.mjs
 Run `node scripts/pdf-viewer-preview.mjs` and open
 `http://127.0.0.1:8799/preview.pdf#page=2&zoom=100` for manual preview. Set `PORT`
 to another port if needed. Add `?tracking=off` to test the privacy-disabled viewer.
+Use `?diagnostics=on` to include mock diagnostic signals in the preview's events.
 
 The optional real-browser smoke test is documented in its new test file. The
 standalone preview script uses mock local analytics and a real bundled PDF, not

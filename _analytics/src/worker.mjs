@@ -8,10 +8,13 @@ import { estimatedCounty } from "./geography.mjs";
 import { connectingIp } from "./ip.mjs";
 import { QUERY_NAMES, REPORT_PLANS, queryUsage } from "./report-plan.mjs";
 import { headlineSummary } from "./summary.mjs";
+import { startReading, saveReading, readingItems, addReadingItems } from "./engagement.mjs";
+import engagementSource from "./engagement-client.mjs";
+import { pdfViewerResponse } from "./pdf-viewer.mjs";
 
 // Configuration and bounded, privacy-preserving normalization.
 const HOSTS = new Set(["www.andrewcwmyers.com", "andrewcwmyers.com"]);
-const KINDS = new Set(["page_view", "outbound_click", "pdf_click"]);
+const KINDS = new Set(["page_view", "outbound_click", "pdf_click", "pdf_view"]);
 const encoder = new TextEncoder();
 const JSON_HEADERS = { "Content-Type": "application/json", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" };
 
@@ -56,8 +59,8 @@ async function authorized(request, secret) {
   return different === 0;
 }
 
-async function boundedJson(request) {
-  if (Number(request.headers.get("Content-Length")) > 4096) throw new Error("large");
+async function boundedJson(request, maximum = 4096) {
+  if (Number(request.headers.get("Content-Length")) > maximum) throw new Error("large");
   const reader = request.body?.getReader();
   if (!reader) throw new Error("empty");
   let length = 0, text = "";
@@ -66,7 +69,7 @@ async function boundedJson(request) {
     const chunk = await reader.read();
     if (chunk.done) break;
     length += chunk.value.length;
-    if (length > 4096) { await reader.cancel(); throw new Error("large"); }
+    if (length > maximum) { await reader.cancel(); throw new Error("large"); }
     text += decoder.decode(chunk.value, { stream: true });
   }
   return JSON.parse(text + decoder.decode());
@@ -101,7 +104,7 @@ async function record(request, env, event) {
   const id = event.id || crypto.randomUUID(), now = Math.floor(Date.now() / 1000);
   // One atomic insert handles concurrent PDF retries across Worker instances.
   // Keep the raw row; the earliest counted retrieval anchors a five-second window.
-  await env.DB.prepare(`INSERT OR IGNORE INTO events
+  const inserted = await env.DB.prepare(`INSERT OR IGNORE INTO events
     (id, occurred_at, kind, path, target, referrer, source, medium, campaign, country, region, browser, device, bot, status, visitor_hash, referrer_status, is_personal, county, county_fips, ip_address, city, os, bot_score, duplicate_of)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
       CASE WHEN ? = 'pdf_request' AND ? != '' THEN COALESCE((
@@ -111,7 +114,8 @@ async function record(request, env, event) {
       ), '') ELSE '' END)`)
     .bind(id, now, event.kind, event.path, event.target || "",
       m.referrer, m.source, m.medium, m.campaign, m.country, m.region, m.browser, m.device, m.bot, event.status || 200, visitor, m.referrerStatus, personalBrowser(request) ? 1 : 0, m.county, m.county_fips, connectingIp(request), m.city, m.os, m.bot_score,
-      event.kind, visitor, visitor, event.path, now - 5, now).run();
+      event.viewer ? '' : event.kind, visitor, visitor, event.path, now - 5, now).run();
+  if ((inserted.meta?.changes ?? inserted.changes) === 0) return false;
   if (event.kind !== 'pdf_request') return true;
   const stored = await env.DB.prepare("SELECT duplicate_of FROM events WHERE id = ?").bind(id).all();
   return stored.results[0]?.duplicate_of === '';
@@ -142,13 +146,37 @@ async function collect(request, env, ctx) {
   const path = cleanPath(body.path);
   if (!KINDS.has(body.kind) || !path || !/^[\da-f-]{36}$/i.test(body.id || "")) return json({ error: "Invalid event" }, 400);
   const target = body.kind === "outbound_click" ? cleanUrl(body.target) : body.kind === "pdf_click" ? cleanPath(body.target) : "";
-  if (body.kind !== "page_view" && !target) return json({ error: "Invalid target" }, 400);
+  if (["outbound_click", "pdf_click"].includes(body.kind) && !target) return json({ error: "Invalid target" }, 400);
+  if (body.kind === "pdf_view" && (!/\.pdf$/i.test(path) || !documents.some(document => document.name === path))) return json({ error: "Invalid document" }, 400);
   const visitor = metadata(request).bot ? null : visitorIdentity(request);
-  background(ctx, record(request, env, { id: body.id, kind: body.kind, path, target, visitorId: visitor?.value,
-    attribution: browserAttribution(body) }));
+  const measured = body.kind === "pdf_view" || (body.kind === "page_view" && body.engagement === true && ["/", "/index", "/index.html"].includes(path));
+  const work = record(request, env, { id: body.id, kind: body.kind === "pdf_view" ? "pdf_request" : body.kind,
+    path, target, visitorId: visitor?.value, viewer: body.kind === "pdf_view", attribution: browserAttribution(body) });
   const headers = new Headers({ "Cache-Control": "private, no-store" });
   if (visitor) headers.append("Set-Cookie", visitor.cookie);
+  if (measured && visitor && env.DB) {
+    const counted = await work;
+    await startReading(env.DB, body.id, await visitorHash(visitor.value));
+    if (counted && body.kind === "pdf_view" && env.GA_API_SECRET && env.GA_MEASUREMENT_ID) {
+      const identity = pdfIdentity(request);
+      headers.append("Set-Cookie", pdfCookie(identity));
+      const pdfRequest = new Request(new URL(path, request.url), { headers: request.headers });
+      background(ctx, sendPdfEvent(pdfRequest, env, identity, { ...metadata(request), ...browserAttribution(body) }));
+    }
+  } else background(ctx, work);
   return new Response(null, { status: 204, headers });
+}
+
+async function engagement(request, env) {
+  if (request.method !== "POST") return json({ error: "Method not allowed" }, 405);
+  if (request.headers.get("Origin") !== new URL(request.url).origin) return json({ error: "Forbidden" }, 403);
+  if (optedOut(request) || metadata(request).bot) return new Response(null, { status: 204, headers: JSON_HEADERS });
+  if (!env.DB) return json({ error: "Database unavailable" }, 503);
+  if (env.COLLECT_LIMIT && !(await env.COLLECT_LIMIT.limit({ key: `reading:${request.headers.get("CF-Connecting-IP") || "unknown"}` })).success) return json({ error: "Rate limited" }, 429);
+  let body;
+  try { body = await boundedJson(request, 16384); } catch { return json({ error: "Invalid reading update" }, 400); }
+  const status = await saveReading(env.DB, body, await visitorHash(visitorIdentity(request).value));
+  return status === 204 ? new Response(null, { status, headers: JSON_HEADERS }) : json({ error: "Invalid reading update" }, status);
 }
 
 export function reportDates(url) {
@@ -175,7 +203,7 @@ async function report(request, env) {
   const personal = "(is_personal = 1 OR visitor_hash IN (SELECT visitor_hash FROM personal_visitors))";
   const where = `${period}${excludePersonal ? ` AND NOT ${personal}` : ""}`;
   if (url.searchParams.get("view") === "users") {
-    const value = await userReport(env.DB, url, dates, where, personal, excludePersonal);
+    const value = await userReport(env.DB, url, dates, personal, excludePersonal);
     return json(value, value.error ? 400 : 200);
   }
   const view = url.searchParams.get("view") || "all";
@@ -249,8 +277,14 @@ async function report(request, env) {
   const selected = queries.map((entry, index) => ({ ...entry, index, name: QUERY_NAMES[index] }))
     .filter(entry => REPORT_PLANS[view].includes(entry.name));
   const executed = await env.DB.batch(selected.map(entry => env.DB.prepare(entry.sql).bind(...entry.params)));
+  const measuredQueries = selected.map((entry, index) => [entry.name, executed[index]]);
   const results = queries.map(() => ({ results: [] }));
   selected.forEach((entry, index) => { results[entry.index] = executed[index]; });
+  if (["all", "overview", "papers"].includes(view) || (view === "detail" && section === "main")) {
+    const reading = await readingItems(env.DB, dates, excludePersonal, view === "detail" ? name : "");
+    results[10].results = addReadingItems(results[10].results, reading.rows);
+    measuredQueries.push(reading.measured);
+  }
   const keys = ["totals", "daily", "pages", "outbound", "countries", "referrers", "devices", "campaigns"];
   results[1].results = pacificDaily(results[1].results);
   const value = { generatedAt: new Date().toISOString(), timeZone: TIME_ZONE, start: dates.start, end: dates.end,
@@ -269,7 +303,7 @@ async function report(request, env) {
   const fields = new Set(["generatedAt", "timeZone", "start", "end", "excludePersonal", "documents", "gaPropertyId", "gaMeasurementId", "gaPdfForwarding", ...REPORT_PLANS[view]]);
   return json({ ...(view === "all" ? value : Object.fromEntries(Object.entries(value).filter(([key]) => fields.has(key)))),
     view, ...(view === "detail" ? { section, name } : {}),
-    queryUsage: queryUsage(selected.map((entry, index) => [entry.name, executed[index]])) });
+    queryUsage: queryUsage(measuredQueries) });
 }
 
 // Public requests stay on the GitHub Pages origin; Cloudflare routes intercept them.
@@ -277,18 +311,38 @@ export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
     if (!HOSTS.has(url.hostname)) return json({ error: "Not found" }, 404);
+    if (url.pathname.startsWith("/__pdfjs/")) {
+      if (!env.ASSETS || !["GET", "HEAD"].includes(request.method)) return json({ error: "Not found" }, 404);
+      const asset = new URL(request.url);
+      asset.pathname = asset.pathname.slice("/__pdfjs".length);
+      return env.ASSETS.fetch(new Request(asset, request));
+    }
     if (url.pathname === "/__analytics/preferences") return preferences(request, env).catch(() => json({ error: "Preference unavailable" }, 503));
     if (url.pathname === "/__analytics/report") return report(request, env).catch(error => {
       console.error("Analytics report failed", error.message);
       return json({ error: "Analytics unavailable" }, 503);
     });
     if (url.pathname === "/__analytics/event") return collect(request, env, ctx).catch(() => json({ error: "Analytics unavailable" }, 503));
+    if (url.pathname === "/__analytics/engagement") return engagement(request, env).catch(() => json({ error: "Analytics unavailable" }, 503));
+    if (url.pathname === "/__analytics/engagement.js") return new Response(engagementSource, { headers: {
+      "Content-Type": "application/javascript", "Cache-Control": "public, max-age=300", "X-Content-Type-Options": "nosniff" } });
     if (url.pathname === "/__analytics/client.js") return new Response(`(${clientSource})(${JSON.stringify(env.GA_MEASUREMENT_ID || "")});`, { headers: {
       "Content-Type": "application/javascript", "Cache-Control": "public, max-age=300", "X-Content-Type-Options": "nosniff" } });
     if (url.pathname.startsWith("/__analytics/")) return json({ error: "Not found" }, 404);
     // Public GET/HEAD content can bypass a tracking-code exception. Private APIs cannot.
     if (request.method === "GET" || request.method === "HEAD") ctx.passThroughOnException?.();
+    const pdfPath = /\.pdf$/i.test(url.pathname) && documents.some(document => document.name === url.pathname);
+    const browserNavigation = request.headers.get("Sec-Fetch-Dest") === "document"
+      && request.headers.get("Sec-Fetch-Mode") === "navigate" && (request.headers.get("Accept") || "").includes("text/html");
+    if (pdfPath && request.method === "GET" && browserNavigation && !url.searchParams.has("__pdf") && !metadata(request).bot) {
+      const viewer = pdfViewerResponse(url.pathname, env.GA_MEASUREMENT_ID, !optedOut(request));
+      if (!optedOut(request)) viewer.headers.append("Set-Cookie", visitorIdentity(request).cookie);
+      return viewer;
+    }
     const response = env.ORIGIN ? await env.ORIGIN.fetch(request) : await fetch(request);
+    // PDF.js fetches bytes separately; its rendered view creates exactly one event.
+    if (pdfPath && url.searchParams.get("__pdf") === "raw" && request.headers.get("Sec-Fetch-Dest") === "empty"
+      && request.headers.get("Sec-Fetch-Site") === "same-origin") return response;
     if (optedOut(request) || request.method !== "GET") return response;
     const type = response.headers.get("Content-Type") || "";
     if ((type.includes("application/pdf") || (response.status === 304 && /\.pdf$/i.test(url.pathname))) && initialPdfRequest(request, response)) {

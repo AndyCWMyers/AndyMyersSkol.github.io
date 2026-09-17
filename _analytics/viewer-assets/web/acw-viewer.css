@@ -1,0 +1,54 @@
+/* Neutral browser chrome; all control artwork remains PDF.js's native icons. */
+:root {
+  color-scheme: light;
+  --main-color: #303134;
+  --body-bg-color: #dadce0;
+  --toolbar-bg-color: #f8f9fa;
+  --toolbar-border-color: #c5c7ca;
+  --toolbar-icon-bg-color: #3c4043;
+  --toolbar-icon-hover-bg-color: #202124;
+  --button-hover-color: #e8eaed;
+  --doorhanger-bg-color: #fff;
+  --doorhanger-border-color: #c5c7ca;
+}
+
+#editorModeButtons,
+#editorModeSeparator,
+#secondaryOpenFile,
+#viewsManagerAddFileButton,
+#viewsManagerStatus,
+#editorUndoBar,
+#editorModeButtons + .verticalToolbarSeparator {
+  display: none !important;
+}
+
+#toolbarContainer { box-shadow: 0 1px 0 #c5c7ca; }
+#mainContainer { min-width: 0; }
+.toolbarButton { border-radius: 4px; }
+.toolbarField, .dropdownToolbarButton { border-radius: 3px; }
+
+.acwPdfFallback {
+  position: fixed;
+  inset: 48px 12px auto;
+  z-index: 10000;
+  margin: 0 auto;
+  max-width: 520px;
+  padding: 12px 16px;
+  border: 1px solid #c5c7ca;
+  background: #fff;
+  color: #303134;
+  font: 14px/1.5 system-ui, sans-serif;
+}
+.acwPdfFallback a { color: #1659a5; }
+
+@media (forced-colors: active) {
+  :root {
+    --main-color: CanvasText;
+    --body-bg-color: Canvas;
+    --toolbar-bg-color: Canvas;
+    --toolbar-border-color: CanvasText;
+    --toolbar-icon-bg-color: ButtonText;
+    --toolbar-icon-hover-bg-color: ButtonText;
+    --doorhanger-bg-color: Canvas;
+  }
+}

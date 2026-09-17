@@ -10,8 +10,19 @@ export default String.raw`function startAnalytics(measurementId) {
     let referrer = document.referrer === "" ? "" : null;
     try { referrer = new URL(document.referrer).origin; } catch {}
     const campaign = key => (query.get(key) || "").replace(/[^a-zA-Z0-9_. -]/g, "").slice(0, 100);
-    const body = JSON.stringify({ id: crypto.randomUUID(), kind, path: location.pathname, target, referrer,
+    const id = crypto.randomUUID();
+    const engagement = kind === "page_view" && ["/", "/index", "/index.html"].includes(location.pathname)
+      && typeof window !== "undefined" && typeof window.acwStartEngagement === "function";
+    const body = JSON.stringify({ id, kind, path: location.pathname, target, referrer, ...(engagement ? { engagement: true } : {}),
       source: campaign("utm_source"), medium: campaign("utm_medium"), campaign: campaign("utm_campaign") });
+    if (engagement) {
+      const start = attempt => fetch(endpoint, { method: "POST", body, keepalive: true }).then(response => {
+        if (!response.ok) throw new Error("Unavailable");
+        window.acwStartEngagement({ id, path: location.pathname, kind: "page_view" });
+      }).catch(() => { if (attempt < 2) setTimeout(() => start(attempt + 1), 2000); });
+      start(0);
+      return;
+    }
     if (!navigator.sendBeacon(endpoint, new Blob([body], { type: "text/plain" }))) {
       fetch(endpoint, { method: "POST", body, keepalive: true }).catch(() => {});
     }

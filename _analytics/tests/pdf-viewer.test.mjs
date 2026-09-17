@@ -1,0 +1,146 @@
+import assert from "node:assert/strict";
+import { test } from "node:test";
+import { readFile, readdir, access } from "node:fs/promises";
+import vm from "node:vm";
+import { pdfViewerResponse } from "../src/pdf-viewer.mjs";
+import template from "../src/pdf-viewer-template.mjs";
+
+const asset = name => new URL("../viewer-assets/" + name, import.meta.url);
+
+class Target {
+  callbacks = new Map();
+  addEventListener(name, fn) { if (!this.callbacks.has(name)) this.callbacks.set(name, []); this.callbacks.get(name).push(fn); }
+  emit(name, value = {}) { for (const fn of this.callbacks.get(name) || []) fn(value); }
+}
+
+async function settle() { for (let i = 0; i < 12; i++) await Promise.resolve(); }
+
+async function bootstrap({ tracking = true, privacy = {}, cookie = "", visible = true } = {}) {
+  const script = await readFile(asset("web/acw-viewer.js"), "utf8");
+  const document = new Target(), window = new Target(), bus = new Target();
+  const requests = [], starts = [], options = {}, timers = new Map(), errorMessage = { hidden: true };
+  let resolveStart, downloads = 0;
+  Object.assign(document, { visibilityState: visible ? "visible" : "hidden", cookie,
+    referrer: "https://ref.example/sensitive?email=hidden", querySelector: name => name === "#acwPdfError" ? errorMessage : ({ content: name.includes("acw-pdf-path") ? "/paper.pdf" : String(tracking) }) });
+  bus.on = bus.addEventListener;
+  window.PDFViewerApplication = { initializedPromise: Promise.resolve(), eventBus: bus, pdfDocument: {}, toolbar: {}, secondaryToolbar: {} };
+  window.PDFViewerApplicationOptions = { setAll: values => Object.assign(options, values) };
+  window.acwStartEngagement = values => { starts.push(values); return { download: () => downloads++, stop() {} }; };
+  vm.runInNewContext(script, { window, document, navigator: privacy, URL, AbortController,
+    location: { href: "https://site.example/paper.pdf?file=evil.pdf&utm_source=test%3C%3E#page=2&zoom=125" },
+    crypto: { randomUUID: () => "pdf-view-id" },
+    setTimeout: (fn, ms) => { timers.set(ms, fn); return ms; }, clearTimeout: id => timers.delete(id),
+    fetch: async (url, init) => { requests.push({ url, ...init }); return new Promise(resolve => { resolveStart = resolve; }); },
+  });
+  document.emit("webviewerloaded");
+  await settle();
+  return { document, window, bus, requests, starts, options, timers, errorMessage,
+    get downloads() { return downloads; },
+    async acknowledge(ok = true) { resolveStart({ ok }); await settle(); },
+  };
+}
+
+test("renderer adapts real generic markup, same URL/raw loading, escaping, CSP and no GA", async () => {
+  const response = pdfViewerResponse("/papers/a%22%3Cscript%3E.pdf", "G-UNUSED");
+  const html = await response.text();
+  assert.equal(response.headers.get("Content-Type"), "text/html; charset=utf-8");
+  assert.match(response.headers.get("Cache-Control"), /no-store/);
+  assert.match(html, /<base href="\/__pdfjs\/web\/"/);
+  assert.match(html, /a&quot;&lt;script&gt;\.pdf<\/title>/);
+  assert.match(html, /acw-pdf-path/);
+  assert.match(html, /src="\/__analytics\/engagement.js"/);
+  assert.match(html, /src="viewer.mjs" type="module"/);
+  assert.match(html, /base-uri 'self'/);
+  assert.doesNotMatch(html, /connect-src \*|G-UNUSED|googletagmanager|gtag\(/);
+  for (const id of ["viewerContainer", "pageNumber", "zoomInButton", "viewFindButton", "viewsManagerToggleButton", "downloadButton", "printButton"]) assert(html.includes('id="' + id + '"'));
+  assert.equal(template, await readFile(asset("web/viewer.html"), "utf8"));
+  const off = await pdfViewerResponse("/cv.pdf", "", false).text();
+  assert.match(off, /acw-tracking" content="false"/);
+  assert.doesNotMatch(off, /\/__analytics\/engagement.js/);
+  assert.match(off, /<noscript><p class="acwPdfFallback"><a href="\/cv.pdf\?__pdf=raw">Open original PDF<\/a>/);
+  assert.match(off, /id="acwPdfError"[^>]+hidden/);
+});
+
+test("renderer rejects noncanonical, external, control, query, hash, and non-PDF paths", () => {
+  for (const path of ["https://evil/a.pdf", "//evil/a.pdf", "/%2fexample/a.pdf", "/\\evil/a.pdf", "/a%5cb.pdf", "/../a.pdf", "/a.pdf?file=b.pdf", "/a.pdf#page=2", "/a\n.pdf", "/a%00.pdf", "/bad%.pdf", "/a.html", null]) {
+    assert.throws(() => pdfViewerResponse(path, ""), TypeError, String(path));
+  }
+  assert.doesNotThrow(() => pdfViewerResponse("/papers/Andy's%20Paper.PDF", ""));
+});
+
+test("full generic release resources and licenses present; query override removed", async () => {
+  for (const name of ["LICENSE", "build/pdf.mjs", "build/pdf.worker.mjs", "web/viewer.html", "web/viewer.css", "web/locale/locale.json", "web/compressed.tracemonkey-pldi-09.pdf"]) await access(asset(name));
+  for (const dir of ["cmaps", "standard_fonts", "wasm", "iccs", "locale", "images"]) assert((await readdir(asset("web/" + dir))).length > 0);
+  const viewer = await readFile(asset("web/viewer.mjs"), "utf8");
+  assert.match(viewer, /file = AppOptions.get\("defaultUrl"\);/);
+  assert.doesNotMatch(viewer, /file = params.get\("file"\)/);
+  const pdf = await readFile(asset("build/pdf.mjs"), "utf8");
+  assert.match(pdf, /6\.3\.289/);
+});
+
+test("PDF view waits for rendered+visible, then ack before tracker; native download hooks only", async () => {
+  const h = await bootstrap({ visible: false });
+  h.bus.emit("pagerendered", { error: new Error("failed") });
+  assert.equal(h.requests.length, 0);
+  h.bus.emit("pagerendered", {});
+  assert.equal(h.requests.length, 0);
+  h.document.visibilityState = "visible";
+  h.document.emit("visibilitychange");
+  assert.equal(h.requests.length, 1);
+  assert.equal(h.starts.length, 0);
+  const app = h.window.PDFViewerApplication;
+  h.bus.emit("download", { source: app.toolbar });
+  h.bus.emit("download", { source: {} });
+  h.bus.emit("print", { source: app.toolbar });
+  await h.acknowledge();
+  assert.equal(h.starts.length, 1);
+  assert.equal(h.downloads, 1);
+  assert.equal(h.starts[0].id, "pdf-view-id");
+  h.bus.emit("download", { source: h.window });
+  h.bus.emit("download", { source: app.secondaryToolbar });
+  assert.equal(h.downloads, 3);
+  h.bus.emit("pagerendered", {});
+  h.document.emit("visibilitychange");
+  h.window.emit("pageshow");
+  assert.equal(h.requests.length, 1);
+  const body = JSON.parse(h.requests[0].body);
+  assert.deepEqual(body, { kind: "pdf_view", id: "pdf-view-id", path: "/paper.pdf", referrer: "https://ref.example", source: "test", medium: "", campaign: "" });
+  assert.equal(h.options.defaultUrl, "/paper.pdf?__pdf=raw");
+  assert.equal(h.options.annotationEditorMode, -1);
+  assert.equal(h.options.enableScripting, false);
+});
+
+test("tracking disabled and browser privacy keep native viewer usable without events", async () => {
+  for (const settings of [{ tracking: false }, { privacy: { doNotTrack: "1" } }, { privacy: { globalPrivacyControl: true } }, { cookie: "__Host-acw_ignore=1" }]) {
+    const h = await bootstrap(settings);
+    h.bus.emit("pagerendered");
+    assert.equal(h.requests.length, 0);
+    assert.equal(h.options.defaultUrl, "/paper.pdf?__pdf=raw");
+  }
+});
+
+test("document, render, and module-load errors expose the original PDF fallback", async () => {
+  for (const type of ["documenterror", "pagerendered", "script"]) {
+    const h = await bootstrap();
+    assert.equal(h.errorMessage.hidden, true);
+    if (type === "script") h.window.emit("error", { target: { tagName: "SCRIPT", src: "https://site.example/__pdfjs/web/viewer.mjs" } });
+    else h.bus.emit(type, { error: new Error("PDF unavailable") });
+    assert.equal(h.errorMessage.hidden, false);
+    assert.equal(h.requests.length, 0);
+  }
+});
+
+test("failed start never starts tracker and retries same id; repeat save and local-open keys blocked", async () => {
+  const h = await bootstrap();
+  h.bus.emit("pagerendered");
+  await h.acknowledge(false);
+  assert.equal(h.starts.length, 0);
+  h.timers.get(1000)();
+  assert.equal(h.requests.length, 2);
+  assert.equal(JSON.parse(h.requests[0].body).id, JSON.parse(h.requests[1].body).id);
+  for (const key of [{ key: "s", repeat: true }, { key: "o", repeat: false }]) {
+    let prevented = false, stopped = false;
+    h.window.emit("keydown", { ...key, ctrlKey: true, preventDefault: () => { prevented = true; }, stopImmediatePropagation: () => { stopped = true; } });
+    assert(prevented && stopped);
+  }
+});

@@ -4,8 +4,9 @@ Cloudflare Worker and D1 deployed September 16, 2026. The private Command Center
 Website Analytics dashboard reads aggregates and private browser histories through its local host.
 
 The Cloudflare Worker proxies the existing GitHub Pages origin. Normal content
-and PDF updates still publish through GitHub Pages. No PDF URL or page design
-changes. The `_analytics` directory is not published by Jekyll.
+and PDF updates still publish through GitHub Pages. PDF URLs and bytes stay the
+same; supported browser navigation now opens the bundled PDF.js viewer. The
+homepage design is unchanged. The `_analytics` directory is not published by Jekyll.
 
 ## Deployment
 
@@ -44,13 +45,59 @@ There is no SQL endpoint and alternate Workers hostnames are disabled.
 
 - `page_view`: visible HTML page observed by the browser script.
 - `page_request`: HTML retrieval through Cloudflare.
-- `pdf_request`: successful initial PDF retrieval (200/206/304 when a PDF content
+- `pdf_request`: a successfully rendered PDF.js view, or a native initial PDF retrieval (200/206/304 when a PDF content
   type is supplied). Nonzero byte ranges are excluded. Repeated retrievals of the
   same PDF with the same browser cookie within five seconds count once. Very quick
-  intentional reopens also coalesce; anonymous retries can still inflate counts.
+  intentional native reopens also coalesce; anonymous retries can still inflate counts.
+  PDF.js uses a stable view ID instead: retries of that ID count once, separate
+  rendered opens count separately, and its raw byte fetches are not extra views.
   Cached/offline reads are not observable.
 - `pdf_click`: a website link click, distinct from retrieval.
 - `outbound_click`: an external HTTP(S) link, including WSJ, without query/hash.
+
+### Reading Time And Downloads
+
+Migration `0011_reading_sessions.sql` adds session state and UTC-hour cumulative
+reading buckets, linked to existing view IDs. It does not change historical rows.
+The shared homepage/PDF tracker counts time only while visible and focused, with
+no inactivity cutoff. Suspended timers and clock jumps are discarded. It sends
+an initial state, then every five engaged minutes, plus pause, resume, exit and
+download actions. Browser termination delivery is best effort; an abrupt close
+can lose the unsent interval. Multiple foreground windows may overlap.
+
+Each save updates one session and only hourly buckets whose counters increased.
+Sequence checks and cumulative counters prevent retries or out-of-order delivery
+from adding time/downloads twice; session and bucket writes are transactional.
+Index maintenance can increase billable D1 writes beyond the number of logical
+rows. Hour buckets preserve Pacific date filtering, including DST and sessions
+crossing midnight. A session with 128 distinct observed hours rotates to a new
+view ID; normal visits do not rotate. `liveAt` comes from an active check-in, with
+a 315-second freshness tolerance; a received pause clears it immediately. This
+is recent activity, not guaranteed real-time presence.
+
+Downloads count PDF.js toolbar/keyboard download requests, not verified saved
+files. Browser-menu Save As, cancelled saves, offline reading, native fallback
+reading time and reading outside this viewer cannot be measured reliably. Print
+actions do not count as downloads. Privacy signals/opt-outs suppress all these
+events; marked personal activity remains recorded and display-filterable.
+Reading updates stay in private D1, not GA4; a rendered PDF view is forwarded to
+GA4 once through the existing server integration.
+
+Papers & CV and charts expose reading hours and downloads, with dashes for the
+homepage. Profiles separately show PDF reading time, homepage time and downloads,
+plus per-view measurements. Historical views show Not measured. A history item
+opened before the selected period can appear as Continued for reading within it,
+without incrementing the period's view count. Users show short Most recent page
+labels; bot scores remain available in profiles/history. Visible Users/profile
+views refresh once per minute; hidden tabs do not poll.
+
+The real generic PDF.js release and licenses are in `viewer-assets/` and deployed
+through the private ASSETS binding, served at `/__pdfjs/`. The Worker allowlists
+known documents, serves its HTML at the original PDF URL for browser navigation,
+and serves original bytes at `?__pdf=raw`. HEAD, bots and non-browser clients retain
+native PDF responses. Search, thumbnails, zoom, navigation, print and download
+remain native PDF.js controls. Local-file opening, scripting and editing are
+disabled. See `PDF-VIEWER-CONTRACT.md` for the browser/Worker protocol.
 
 ## Own Visits And Distinct Browsers
 
@@ -318,9 +365,10 @@ recover historical acquisition attribution. Advertising use/personalization is
 denied for server events. The owner acknowledged the required privacy rights and
 disclosures before enabling this integration; this is not a compliance audit.
 
-PDF bytes, ETags and URLs remain unchanged. Eligible PDF responses request browser
+PDF bytes, ETags and URLs remain unchanged. Eligible native PDF responses request browser
 revalidation so later online opens can be observed. Native PDF reading time,
-scroll depth, offline opens and reliable unique-reader counts are unavailable.
+scroll depth, offline opens and reliable unique-reader counts remain unavailable;
+the PDF.js reading measurements described above are prospective only.
 GA4 may not show these events in engagement/realtime metrics because no engagement
 duration is invented. The Command Center uses independent Cloudflare aggregates;
 GA4 historical reports remain in Google Analytics. GA4 Data API import is not set up.

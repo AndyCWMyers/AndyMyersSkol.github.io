@@ -1,17 +1,21 @@
 // Labels are truncated random-cookie hashes, never cookie values or identities.
 // Called only after the report endpoint's bearer, date and personal-filter checks.
 import { queryUsage } from "./report-plan.mjs";
+import { userReading, historyReading } from "./engagement.mjs";
 
-export async function userReport(db, url, dates, where, personal, excludePersonal) {
+export async function userReport(db, url, dates, personal, excludePersonal) {
   const user = url.searchParams.get("user") || "";
   const offsetText = url.searchParams.get("offset") || "0";
   if ((user && !/^[a-f0-9]{24}$/.test(user)) || !/^\d{1,7}$/.test(offsetText)) return { error: "Invalid user or offset" };
   const offset = Number(offsetText), limit = user ? 100 : 15;
-  const base = `FROM events WHERE ${where} AND bot = 0 AND visitor_hash != '' AND kind IN ('page_view', 'pdf_request', 'outbound_click')`;
+  const base = `FROM events WHERE ((occurred_at >= ?1 AND occurred_at < ?2)
+      OR id IN (SELECT session_id FROM reading_hours WHERE hour >= ?1 AND hour < ?2))
+    AND duplicate_of = '' ${excludePersonal ? `AND NOT ${personal}` : ""}
+    AND bot = 0 AND visitor_hash != '' AND kind IN ('page_view', 'pdf_request', 'outbound_click')`;
   let rows, addresses = [], unrecordedIpEvents = 0;
   const measured = [];
   if (user) {
-    rows = await db.prepare(`SELECT occurred_at AS time, kind,
+    rows = await db.prepare(`SELECT id, occurred_at AS time, occurred_at < ?1 AS continued, kind,
       CASE WHEN path IN ('/index.html', '/index') THEN '/' ELSE path END AS path,
       target, country, region, city, county, county_fips, ip_address, browser, device, os, bot_score,
       CASE WHEN referrer_status = 'known' THEN referrer WHEN referrer_status = 'direct' THEN '__direct__' ELSE '__unknown__' END AS referrer,
@@ -28,11 +32,12 @@ export async function userReport(db, url, dates, where, personal, excludePersona
     measured.push(["userHistory", rows], ["userAddresses", ipRows]);
   } else {
     rows = await db.prepare(`WITH activity AS (
-      SELECT visitor_hash, occurred_at, kind, country, region, city, county, county_fips, browser, device, os, bot_score,
+      SELECT visitor_hash, occurred_at, kind, path, country, region, city, county, county_fips, browser, device, os, bot_score,
         ${personal} AS personal, ROW_NUMBER() OVER (PARTITION BY visitor_hash ORDER BY occurred_at DESC, rowid DESC) AS recent ${base}
     ) SELECT substr(visitor_hash, 1, 24) AS id, COUNT(*) AS events,
-      SUM(kind != 'outbound_click') AS views, SUM(kind = 'outbound_click') AS clicks,
+      SUM(kind != 'outbound_click' AND occurred_at >= ?1 AND occurred_at < ?2) AS views, SUM(kind = 'outbound_click') AS clicks,
       MIN(occurred_at) AS firstSeen, MAX(occurred_at) AS lastSeen, MAX(personal) AS personal,
+      MAX(CASE WHEN recent = 1 THEN CASE WHEN path IN ('/index','/index.html') THEN '/' ELSE path END END) AS lastPath,
       MAX(CASE WHEN recent = 1 THEN country END) AS country, MAX(CASE WHEN recent = 1 THEN region END) AS region,
       MAX(CASE WHEN recent = 1 THEN city END) AS city,
       MAX(CASE WHEN recent = 1 THEN county END) AS county, MAX(CASE WHEN recent = 1 THEN county_fips END) AS county_fips,
@@ -42,7 +47,28 @@ export async function userReport(db, url, dates, where, personal, excludePersona
       .bind(dates.from, dates.until, limit + 1, offset).all();
     measured.push(["users", rows]);
   }
+  const visible = rows.results.slice(0, limit);
+  const reading = await userReading(db, dates, excludePersonal, user ? [user] : visible.map(row => row.id));
+  if (reading.measured) measured.push(reading.measured);
+  let engagement;
+  if (user) {
+    engagement = reading.rows[0];
+    const history = await historyReading(db, dates, excludePersonal, visible.map(row => row.id));
+    measured.push(...history.measured);
+    const byId = new Map(history.rows.map(row => [row.id, row]));
+    for (const row of visible) if (byId.has(row.id)) Object.assign(row, byId.get(row.id));
+  } else {
+    const byUser = new Map(reading.rows.map(row => [row.id, row]));
+    for (const row of visible) {
+      const detail = byUser.get(row.id);
+      if (detail) {
+        Object.assign(row, detail);
+        if (detail.lastReadingAt >= row.lastSeen && detail.lastReadingAt < dates.until) row.lastPath = detail.lastReadingPath;
+      }
+    }
+  }
   return { start: dates.start, end: dates.end, excludePersonal, user, offset, limit,
+    ...(engagement ? { engagement } : {}),
     ...(user ? { addresses, unrecordedIpEvents } : {}),
-    queryUsage: queryUsage(measured), rows: rows.results.slice(0, limit), nextOffset: rows.results.length > limit ? offset + limit : null };
+    queryUsage: queryUsage(measured), rows: visible, nextOffset: rows.results.length > limit ? offset + limit : null };
 }

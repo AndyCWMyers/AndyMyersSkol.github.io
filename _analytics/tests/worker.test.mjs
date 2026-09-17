@@ -22,6 +22,7 @@ function database(includeHistoryIndex = true) {
   db.exec(readFileSync(new URL("../migrations/0008_client_metadata.sql", import.meta.url), "utf8"));
   if (includeHistoryIndex) db.exec(readFileSync(new URL("../migrations/0009_user_history_index.sql", import.meta.url), "utf8"));
   db.exec(readFileSync(new URL("../migrations/0010_headline_summaries.sql", import.meta.url), "utf8"));
+  db.exec(readFileSync(new URL("../migrations/0011_reading_sessions.sql", import.meta.url), "utf8"));
   const prepare = (sql) => { assert.ok((sql.match(/UNION ALL/g) || []).length < 5, "D1 compound SELECT limit"); return ({ bind: (...params) => ({
     run: async () => db.prepare(sql).run(...params),
     all: async () => ({ results: db.prepare(sql).all(...params) }),
@@ -255,8 +256,8 @@ test("lazy report plans preserve full-report values while skipping unopened tabs
     for (const [view, fields] of Object.entries(plans)) {
       const part = await get(view, { excludePersonal });
       assert.equal(calls.at(-1), fields.length, view);
-      assert.equal(part.queryUsage.queryCount, fields.length);
-      assert.equal(part.queryUsage.rowsRead, fields.length * 10);
+      assert.equal(part.queryUsage.queryCount, fields.length + (["overview", "papers"].includes(view) ? 1 : 0));
+      assert.equal(part.queryUsage.rowsRead, ["overview", "papers"].includes(view) ? null : fields.length * 10);
       assert.equal(part.breakdowns, undefined);
       for (const field of fields) assert.deepEqual(part[field], field === "items" ? full.items.filter(row => row.section === (view === "outbound" ? "outbound" : "main")) : full[field], `${view}:${field}`);
     }
@@ -292,7 +293,7 @@ test("profile index preserves records and is used by both history and IP queries
   const response = await worker.fetch(request(`/__analytics/report?view=users&user=${"0".repeat(24)}`, { headers: { Authorization: `Bearer ${SECRET}` } }), { DB: inspected, READ_TOKEN: SECRET }, context());
   assert.equal(response.status, 200);
   const value = await response.json();
-  assert.equal(value.queryUsage.queryCount, 2);
-  assert.equal(plans.length, 2);
-  assert.ok(plans.every(plan => plan.some(row => row.detail.includes("events_user_history"))));
+  assert.equal(value.queryUsage.queryCount, 5);
+  assert.equal(plans.length, 5);
+  assert.ok(plans.slice(0, 2).every(plan => plan.some(row => row.detail.includes("events_user_history"))));
 });

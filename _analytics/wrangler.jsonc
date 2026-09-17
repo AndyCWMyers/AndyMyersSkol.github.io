@@ -6,6 +6,7 @@
   "account_id": "c946b83f25bf9b04260b7996c77cfa83",
   "workers_dev": false,
   "preview_urls": false,
+  "assets": { "directory": "./viewer-assets", "binding": "ASSETS", "run_worker_first": true },
   "observability": { "enabled": false },
   "d1_databases": [{
     "binding": "DB",

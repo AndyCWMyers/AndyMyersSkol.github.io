@@ -279,6 +279,27 @@ test("lazy report plans preserve full-report values while skipping unopened tabs
   }
 });
 
+test("paper details use the canonical page index and scan raw events once per breakdown query", async () => {
+  const { DB, db } = database(), now = Math.floor(Date.now() / 1000);
+  db.exec(readFileSync(new URL("../migrations/0012_page_filter.sql", import.meta.url), "utf8"));
+  for (const [i, path] of ["/", "/index", "/index.html", "/other.pdf"].entries()) {
+    db.prepare("INSERT INTO events(id,occurred_at,kind,path,visitor_hash) VALUES(?,?,'page_view',?,?)").run(String(i), now, path, String(i).repeat(64));
+  }
+  const plans = [];
+  const inspected = { ...DB, prepare: sql => ({ bind: (...params) => {
+    plans.push({ sql, rows: db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all(...params) });
+    return DB.prepare(sql).bind(...params);
+  } }) };
+  const response = await worker.fetch(request("/__analytics/report?view=detail&section=main&name=%2F", { headers: { Authorization: `Bearer ${SECRET}` } }), { DB: inspected, READ_TOKEN: SECRET }, context());
+  assert.equal(response.status, 200);
+  const result = await response.json();
+  assert.equal(result.items[0].count, 3);
+  const activity = plans.filter(plan => plan.sql.startsWith("WITH activity AS"));
+  assert.equal(activity.length, 3);
+  for (const plan of activity) assert.equal(plan.rows.filter(row => row.detail.includes("SEARCH events USING INDEX events_page_time")).length, 1);
+  assert.equal(activity.filter(plan => plan.sql.startsWith("WITH activity AS MATERIALIZED")).length, 2);
+});
+
 test("profile index preserves records and is used by both history and IP queries", async () => {
   const { DB, db } = database(false), now = Math.floor(Date.now() / 1000);
   for (let i = 0; i < 100; i++) db.prepare("INSERT INTO events(id,occurred_at,kind,path,visitor_hash) VALUES(?,?,'page_view','/',?)").run(String(i), now - i, i.toString(16).padStart(64, "0"));

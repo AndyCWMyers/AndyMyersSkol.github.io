@@ -245,6 +245,17 @@ Migration `0012_page_filter.sql` adds page/time and active-session indexes.
 Tab/map switches and destination details fetch on demand. All queries
 preserve date, personal, bot, duplicate and distinct-browser semantics.
 
+Paper-detail predicates exactly match the canonical page/time expression index.
+Multi-dimension breakdowns materialize their filtered activity once per query,
+instead of rereading raw events for each dimension. Live reports resolve the
+recent cohort first, skip historical queries when empty, and reuse that cohort
+for both indexed user-history lookup and live badges. These optimizations add no
+persistent data, indexes or writes, and do not extend cache lifetimes. Query-plan
+and result-equivalence tests cover page aliases, distinct counts, filters and CSV
+results. On September 17, 2026, live D1 checks measured 351 to 3 rows read for an
+empty live report and 2,628 to 345 for the CV detail panel; actual savings depend
+on the selected period and traffic.
+
 Migration `0010_headline_summaries.sql` maintains hourly event counters and
 visitor memberships with atomic SQLite triggers. `view=summary` reads these
 compact tables for unfiltered-page counts, plus reading-hour summaries for the

@@ -251,12 +251,13 @@ async function report(request, env) {
   }
   const section = url.searchParams.get("section") || "", name = url.searchParams.get("name") || "";
   if (view === "detail" && (!["main", "outbound"].includes(section) || !name || name.length > 2048)) return json({ error: "Invalid detail query" }, 400);
-  const mainPath = "CASE WHEN path IN ('/index.html', '/index') THEN '/' ELSE path END";
+  // SQLite expression indexes require the same expression, including IN-list order.
+  const mainPath = "CASE WHEN path IN ('/index','/index.html') THEN '/' ELSE path END";
   const scope = view === "detail" ? section : view === "outbound" ? "outbound" : ["papers", "overview"].includes(view) ? "main" : "";
   const itemFilter = scope === "outbound" ? " AND kind = 'outbound_click'" : scope === "main" ? " AND kind IN ('page_view','pdf_request')" : "";
   const detailFilter = view === "detail" ? ` AND ${section === "outbound" ? "target" : mainPath} = ?` : "";
   const query = (sql) => ({ sql, params: [dates.from, dates.until, ...(page ? [page] : []), ...(view === "detail" && sql.startsWith("WITH activity AS") ? [name] : [])] });
-  const activity = `WITH activity AS (
+  const activity = (materialized = false) => `WITH activity AS ${materialized ? "MATERIALIZED " : ""}(
     SELECT *, CASE WHEN kind = 'outbound_click' THEN 'outbound' ELSE 'main' END AS section,
       CASE WHEN kind = 'outbound_click' THEN target WHEN path IN ('/index.html', '/index') THEN '/' ELSE path END AS name
     FROM events WHERE ${where} AND bot = 0 AND kind IN ('page_view', 'pdf_request', 'outbound_click')${itemFilter}${detailFilter}
@@ -285,8 +286,8 @@ async function report(request, env) {
     query(`SELECT source, medium, campaign, COUNT(*) AS count FROM events WHERE ${where} AND bot = 0 AND source != '' GROUP BY source, medium, campaign ORDER BY count DESC LIMIT 100`),
     query(`SELECT COUNT(DISTINCT NULLIF(visitor_hash, '')) AS visitors, COUNT(NULLIF(visitor_hash, '')) AS identifiedRequests, COUNT(*) - COUNT(NULLIF(visitor_hash, '')) AS unidentifiedRequests FROM events WHERE ${where} AND bot = 0 AND kind = 'pdf_request'`),
     query(`SELECT path AS name, COUNT(DISTINCT NULLIF(visitor_hash, '')) AS visitors, COUNT(NULLIF(visitor_hash, '')) AS identifiedRequests, COUNT(*) - COUNT(NULLIF(visitor_hash, '')) AS unidentifiedRequests FROM events WHERE ${where} AND bot = 0 AND kind = 'pdf_request' GROUP BY path ORDER BY COUNT(*) DESC LIMIT 100`),
-    query(`${activity} SELECT section, name, ${counts} FROM activity GROUP BY section, name ORDER BY count DESC`),
-    query(`${activity}, breakdowns AS (${breakdowns}), ranked AS (
+    query(`${activity()} SELECT section, name, ${counts} FROM activity GROUP BY section, name ORDER BY count DESC`),
+    query(`${activity(true)}, breakdowns AS (${breakdowns}), ranked AS (
       SELECT *, ROW_NUMBER() OVER (PARTITION BY section, name, dimension ORDER BY count DESC, value, detail) AS rank FROM breakdowns
     ) SELECT section, name, dimension, value, detail, count, visitors, identifiedRequests, unidentifiedRequests FROM ranked WHERE rank <= 50 ORDER BY section, name, dimension, rank`),
     query(`SELECT COUNT(*) AS events FROM events WHERE ${period} AND bot = 0 AND kind IN ('page_view', 'pdf_request', 'outbound_click') AND ${personal}`),
@@ -294,7 +295,7 @@ async function report(request, env) {
     query(`SELECT county_fips AS name, county, region, kind, COUNT(*) AS count FROM events WHERE ${where} AND bot = 0 AND country IN ('US','PR') AND kind IN ('page_view','pdf_request','outbound_click') GROUP BY county_fips, county, region, kind ORDER BY count DESC`),
     query(`SELECT county_fips AS name, county, region, ${counts} FROM events WHERE ${where} AND bot = 0 AND country IN ('US','PR') AND kind IN ('page_view','pdf_request') GROUP BY county_fips, county, region ORDER BY count DESC`),
     // D1 permits only five compound SELECT terms; finer geography stays separate.
-    query(`${activity}, location_counts AS (
+    query(`${activity(true)}, location_counts AS (
       SELECT section, name, 'counties' AS dimension, county AS value, region AS detail, ${counts}
       FROM activity WHERE country IN ('US','PR') GROUP BY section, name, county, region
       UNION ALL

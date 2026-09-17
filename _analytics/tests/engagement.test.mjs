@@ -192,6 +192,29 @@ test("live fallback uses recent unmeasured activity consistently in lists and pr
   assert.equal((await report(DB, "view=live")).rows.length, 3);
 });
 
+test("live reports skip historical scans when empty and index only the recent cohort", async () => {
+  const { DB, db } = database(), current = Math.floor(Date.now() / 1000);
+  const queries = [], plans = [];
+  const inspected = { ...DB, prepare: sql => ({ bind: (...params) => {
+    queries.push(sql);
+    plans.push(db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all(...params));
+    return DB.prepare(sql).bind(...params);
+  } }) };
+  const insert = db.prepare("INSERT INTO events(id,occurred_at,kind,path,visitor_hash) VALUES(?,?,'pdf_request',?,?)");
+  for (let i = 0; i < 100; i++) insert.run(String(i), current - 1000, PDF, await visitorHash(String(i)));
+  const empty = await report(inspected, "view=live");
+  assert.deepEqual(empty.rows, []);
+  assert.equal(queries.length, 1);
+  assert.equal(empty.queryUsage.queries[0].name, "userLiveActivity");
+  queries.length = 0; plans.length = 0;
+  insert.run("recent", current, PDF, visitor);
+  const live = await report(inspected, "view=live");
+  assert.equal(live.rows.length, 1);
+  assert.equal(live.rows[0].id, visitor.slice(0,24));
+  assert.equal(live.queryUsage.queries.filter(row => row.name === "userLiveActivity").length, 1);
+  assert.ok(plans[1].some(row => row.detail.includes("events_user_history")));
+});
+
 test("headline engagement includes homepage time and honors page and personal filters", async () => {
   const { DB, db } = database();
   const pdf = await session(db, DB), home = await session(db, DB, { path: "/", kind: "page_view" }), own = await session(db, DB);

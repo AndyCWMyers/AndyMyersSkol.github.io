@@ -31,19 +31,30 @@ export async function userReport(db, url, dates, personal, excludePersonal, page
   if ((user && !/^[a-f0-9]{24}$/.test(user)) || !/^\d{1,7}$/.test(offsetText)) return { error: "Invalid user or offset" };
   const offset = Number(offsetText), limit = user ? 100 : 15;
   const live = url.searchParams.get("view") === "live";
-  const params = [dates.from, dates.until, ...(page ? [page] : [])];
+  const activityParams = [dates.from, dates.until, ...(page ? [page] : [])];
+  const params = [...activityParams];
+  const measured = [];
   const cohort = page ? `AND visitor_hash IN (SELECT visitor_hash FROM events
     WHERE CASE WHEN path IN ('/index','/index.html') THEN '/' ELSE path END = ?3
       AND ((occurred_at >= ?1 AND occurred_at < ?2) OR id IN (SELECT session_id FROM reading_hours WHERE hour >= ?1 AND hour < ?2))
       AND bot = 0 AND duplicate_of = '' AND kind IN ('page_view','pdf_request'))` : "";
   const activitySql = liveActivityQuery(excludePersonal, page);
-  const liveFilter = live ? `AND visitor_hash IN (SELECT visitor_hash FROM (${activitySql}))` : "";
+  // Resolve the small recent cohort first, avoiding historical scans when empty.
+  const liveActivity = live ? await db.prepare(activitySql).bind(...activityParams).all() : null;
+  if (liveActivity) measured.push(["userLiveActivity", liveActivity]);
+  if (liveActivity && !liveActivity.results.length && !user) return {
+    start: dates.start, end: dates.end, excludePersonal, page, live, user, offset, limit,
+    queryUsage: queryUsage(measured), rows: [], nextOffset: null,
+  };
+  if (liveActivity) params.push(JSON.stringify(liveActivity.results.map(row => row.visitor_hash)));
+  // The prefix condition uses the existing profile index; full hashes retain exact membership.
+  const liveFilter = live ? `AND substr(visitor_hash, 1, 24) IN (SELECT substr(value, 1, 24) FROM json_each(?${params.length}))
+    AND visitor_hash IN (SELECT value FROM json_each(?${params.length}))` : "";
   const base = `FROM events WHERE ((occurred_at >= ?1 AND occurred_at < ?2)
       OR id IN (SELECT session_id FROM reading_hours WHERE hour >= ?1 AND hour < ?2))
     AND duplicate_of = '' ${excludePersonal ? `AND NOT ${personal}` : ""}
     AND bot = 0 AND visitor_hash != '' AND kind IN ('page_view', 'pdf_request', 'outbound_click') ${cohort} ${liveFilter}`;
   let rows, addresses = [], unrecordedIpEvents = 0, diagnostics, diagnosticsMore = false, diagnosticsUnavailable = false;
-  const measured = [];
   if (user) {
     rows = await db.prepare(`SELECT id, occurred_at AS time, occurred_at < ?1 AS continued, kind,
       CASE WHEN path IN ('/index.html', '/index') THEN '/' ELSE path END AS path,
@@ -86,10 +97,11 @@ export async function userReport(db, url, dates, personal, excludePersonal, page
   }
   const visible = rows.results.slice(0, limit);
   const labels = user ? [user] : visible.map(row => row.id);
-  const activity = labels.length ? await db.prepare(`SELECT substr(visitor_hash,1,24) AS id, liveAt, liveUntil
+  const activity = liveActivity ? { results: liveActivity.results.map(row => ({ id: row.visitor_hash.slice(0, 24), liveAt: row.liveAt, liveUntil: row.liveUntil })) }
+    : labels.length ? await db.prepare(`SELECT substr(visitor_hash,1,24) AS id, liveAt, liveUntil
     FROM (${activitySql}) WHERE substr(visitor_hash,1,24) IN (${labels.map(() => "?").join(",")})`)
-    .bind(...params, ...labels).all() : null;
-  if (activity) measured.push(["userLiveActivity", activity]);
+    .bind(...activityParams, ...labels).all() : null;
+  if (activity && !liveActivity) measured.push(["userLiveActivity", activity]);
   const byActivity = new Map(activity?.results.map(({ id, ...row }) => [id, row]) || []);
   const liveDetails = id => byActivity.get(id) || { liveAt: 0, liveUntil: 0 };
   const reading = await userReading(db, dates, excludePersonal, user ? [user] : visible.map(row => row.id));

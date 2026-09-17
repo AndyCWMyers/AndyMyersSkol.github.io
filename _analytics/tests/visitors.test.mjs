@@ -17,6 +17,7 @@ function setup() {
   db.exec(readFileSync(new URL("../schema.sql", import.meta.url), "utf8"));
   db.exec(readFileSync(new URL("../migrations/0001_pdf_visitors.sql", import.meta.url), "utf8"));
   db.exec(readFileSync(new URL("../migrations/0002_referrer_status.sql", import.meta.url), "utf8"));
+  db.exec(readFileSync(new URL("../migrations/0003_personal_activity.sql", import.meta.url), "utf8"));
   const pending = [], ga = [];
   const prepare = sql => ({ bind: (...params) => ({ run: async () => db.prepare(sql).run(...params), all: async () => ({ results: db.prepare(sql).all(...params) }) }) });
   const env = { DB: { prepare, batch: queries => Promise.all(queries.map(query => query.all())) }, READ_TOKEN: SECRET,
@@ -107,10 +108,12 @@ test("additive migration preserves existing requests with explicitly unknown vis
 test("homepage excludes this browser before Google Tag Manager loads", () => {
   const html = readFileSync(new URL("../../index.html", import.meta.url), "utf8");
   const tag = html.match(/<!-- Google Tag Manager -->\s*<script>([\s\S]*?)<\/script>/)[1];
-  const window = {};
-  vm.runInNewContext(tag, { window, document: { cookie: "__Host-acw_ignore=1" }, navigator: {} });
-  assert.equal(window["ga-disable-G-82ZD3DWY3B"], true);
-  assert.equal(window.dataLayer, undefined);
+  for (const cookie of ["__Host-acw_ignore=1", "__Host-acw_personal=1"]) {
+    const window = {};
+    vm.runInNewContext(tag, { window, document: { cookie }, navigator: {} });
+    assert.equal(window["ga-disable-G-82ZD3DWY3B"], true);
+    assert.equal(window.dataLayer, undefined);
+  }
 });
 
 test("homepage, clicks and PDFs share one visitor cookie while source capture stays sanitized", async () => {
@@ -190,5 +193,63 @@ test("document labels match actual website titles and case-correct local assets"
     assert.ok(existsSync(new URL(`../..${doc.name}`, import.meta.url)), doc.name);
     assert.ok(html.includes(`href="${doc.name}"`), doc.name);
     assert.ok(html.includes(doc.title), doc.title);
+  }
+});
+
+test("personal activity is retained, never forwarded to GA, and filtered across every aggregate", async () => {
+  const s = setup();
+  const owner = `__Host-acw_personal=1; __Host-acw_visitor=${A}`;
+  const other = `__Host-acw_visitor=${B}`;
+  for (const cookie of [owner, other]) {
+    await s.request("/paper.pdf", { Cookie: cookie, Referer: "https://source.example/" });
+    for (const event of [{ kind: "page_view" }, { kind: "outbound_click", target: "https://www.wsj.com/article" }, { kind: "pdf_click", target: "/paper.pdf" }]) {
+      await s.request("/__analytics/event", { Origin: ROOT, Cookie: cookie }, { method: "POST", body: JSON.stringify({ id: crypto.randomUUID(), path: "/", referrer: "https://source.example/", source: "news", ...event }) });
+    }
+  }
+  await s.finish();
+  assert.equal(s.ga.length, 1);
+  assert.equal(s.db.prepare("SELECT COUNT(*) AS n FROM events WHERE is_personal=1").get().n, 4);
+  const report = async filter => (await s.request(`/__analytics/report?excludePersonal=${filter}`, { Authorization: `Bearer ${SECRET}` })).json();
+  const all = await report(0), filtered = await report(1);
+  assert.equal(all.excludePersonal, false);
+  assert.equal(filtered.excludePersonal, true);
+  assert.equal(filtered.personalActivity.events, 3);
+  for (const key of ["totals", "daily", "pages", "outbound", "countries", "referrers", "devices", "campaigns", "items", "breakdowns"]) {
+    assert.equal(all[key].length, filtered[key].length, key);
+    assert.deepEqual(all[key].map(row => row.count), filtered[key].map(row => row.count * 2), key);
+  }
+  assert.equal(all.pdfVisitors.visitors, 2);
+  assert.equal(filtered.pdfVisitors.visitors, 1);
+  assert.equal(filtered.items.find(row => row.name === "/").visitors, 1);
+  assert.equal((await s.request("/__analytics/report?excludePersonal=maybe", { Authorization: `Bearer ${SECRET}` })).status, 400);
+});
+
+test("marking a browser matches only its existing identity and unmarking rotates that identity", async () => {
+  const s = setup();
+  await s.request("/old.pdf", { Cookie: `__Host-acw_visitor=${A}` });
+  await s.request("/other.pdf", { Cookie: `__Host-acw_visitor=${B}` });
+  await s.finish();
+  s.db.prepare("INSERT INTO events(id,occurred_at,kind,path) VALUES(?,?,?,?)").run("anonymous", Math.floor(Date.now()/1000), "pdf_request", "/anonymous.pdf");
+  const marked = await s.request("/__analytics/preferences", { Origin: ROOT, Cookie: `__Host-acw_visitor=${A}` }, { method: "POST", body: "mode=personal" });
+  assert.equal(marked.status, 303);
+  assert.match(marked.headers.get("Set-Cookie"), /__Host-acw_personal=1/);
+  assert.match(marked.headers.get("Set-Cookie"), /__Host-acw_ignore=;.*Max-Age=0/);
+  assert.equal(s.db.prepare("SELECT visitor_hash FROM personal_visitors").get().visitor_hash, await visitorHash(A));
+  const filtered = await (await s.request("/__analytics/report", { Authorization: `Bearer ${SECRET}` })).json();
+  assert.deepEqual(filtered.items.map(row => row.name).sort(), ["/anonymous.pdf", "/other.pdf"]);
+  const unmarked = await s.request("/__analytics/preferences", { Origin: ROOT, Cookie: `__Host-acw_personal=1; __Host-acw_visitor=${A}` }, { method: "POST", body: "mode=included" });
+  assert.match(unmarked.headers.get("Set-Cookie"), /__Host-acw_personal=;.*Max-Age=0/);
+  assert.match(unmarked.headers.get("Set-Cookie"), /__Host-acw_visitor=;.*Max-Age=0/);
+  assert.equal(JSON.stringify(filtered).includes(await visitorHash(A)), false);
+});
+
+test("do-not-record and privacy signals still override a personal marker", async () => {
+  for (const headers of [{ DNT: "1" }, { "Sec-GPC": "1" }, { Cookie: "__Host-acw_personal=1; __Host-acw_ignore=1" }]) {
+    const s = setup(), actual = { Cookie: `__Host-acw_personal=1; __Host-acw_visitor=${A}`, ...headers };
+    await s.request("/paper.pdf", actual);
+    await s.request("/__analytics/event", { ...actual, Origin: ROOT }, { method: "POST", body: JSON.stringify({ id: crypto.randomUUID(), kind: "page_view", path: "/" }) });
+    await s.finish();
+    assert.equal(s.db.prepare("SELECT COUNT(*) AS n FROM events").get().n, 0);
+    assert.equal(s.ga.length, 0);
   }
 });

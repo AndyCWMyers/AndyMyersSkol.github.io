@@ -1,6 +1,6 @@
 import clientSource from "./client.mjs";
 import { pdfIdentity, pdfCookie, sendPdfEvent } from "./ga.mjs";
-import { excludedBrowser, preferences, visitorIdentity, visitorHash } from "./preferences.mjs";
+import { excludedBrowser, personalBrowser, preferences, visitorIdentity, visitorHash } from "./preferences.mjs";
 import documents from "./documents.mjs";
 
 // Configuration and bounded, privacy-preserving normalization.
@@ -88,10 +88,10 @@ async function record(request, env, event) {
   const m = { ...metadata(request), ...event.attribution };
   const visitor = event.visitorId ? await visitorHash(event.visitorId) : "";
   await env.DB.prepare(`INSERT OR IGNORE INTO events
-    (id, occurred_at, kind, path, target, referrer, source, medium, campaign, country, region, browser, device, bot, status, visitor_hash, referrer_status)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    (id, occurred_at, kind, path, target, referrer, source, medium, campaign, country, region, browser, device, bot, status, visitor_hash, referrer_status, is_personal)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
     .bind(event.id || crypto.randomUUID(), Math.floor(Date.now() / 1000), event.kind, event.path, event.target || "",
-      m.referrer, m.source, m.medium, m.campaign, m.country, m.region, m.browser, m.device, m.bot, event.status || 200, visitor, m.referrerStatus).run();
+      m.referrer, m.source, m.medium, m.campaign, m.country, m.region, m.browser, m.device, m.bot, event.status || 200, visitor, m.referrerStatus, personalBrowser(request) ? 1 : 0).run();
 }
 
 function background(ctx, promise) {
@@ -141,10 +141,16 @@ export function reportDates(url) {
 async function report(request, env) {
   if (!await authorized(request, env.READ_TOKEN)) return json({ error: "Unauthorized" }, 401);
   if (request.method !== "GET") return json({ error: "Method not allowed" }, 405);
-  const dates = reportDates(new URL(request.url));
+  const url = new URL(request.url);
+  const dates = reportDates(url);
   if (!dates) return json({ error: "Invalid date range (maximum 366 days)" }, 400);
   if (!env.DB) return json({ error: "Database unavailable" }, 503);
-  const where = "occurred_at >= ? AND occurred_at < ?";
+  const filter = url.searchParams.get("excludePersonal") ?? "1";
+  if (!["0", "1"].includes(filter)) return json({ error: "Invalid personal-activity filter" }, 400);
+  const excludePersonal = filter === "1";
+  const period = "occurred_at >= ? AND occurred_at < ?";
+  const personal = "(is_personal = 1 OR visitor_hash IN (SELECT visitor_hash FROM personal_visitors))";
+  const where = `${period}${excludePersonal ? ` AND NOT ${personal}` : ""}`;
   const query = (sql) => env.DB.prepare(sql).bind(dates.from, dates.until);
   const activity = `WITH activity AS (
     SELECT *, CASE WHEN kind = 'outbound_click' THEN 'outbound' ELSE 'main' END AS section,
@@ -179,16 +185,18 @@ async function report(request, env) {
     query(`${activity}, breakdowns AS (${breakdowns}), ranked AS (
       SELECT *, ROW_NUMBER() OVER (PARTITION BY section, name, dimension ORDER BY count DESC, value, detail) AS rank FROM breakdowns
     ) SELECT section, name, dimension, value, detail, count, visitors, identifiedRequests, unidentifiedRequests FROM ranked WHERE rank <= 50 ORDER BY section, name, dimension, rank`),
+    query(`SELECT COUNT(*) AS events FROM events WHERE ${period} AND bot = 0 AND kind IN ('page_view', 'pdf_request', 'outbound_click') AND ${personal}`),
   ]);
   const keys = ["totals", "daily", "pages", "outbound", "countries", "referrers", "devices", "campaigns"];
   return json({ generatedAt: new Date().toISOString(), start: dates.start, end: dates.end,
     ...Object.fromEntries(keys.map((key, i) => [key, results[i].results])),
     pdfVisitors: results[8].results[0], pdfVisitorsByPath: results[9].results,
     documents, items: results[10].results, breakdowns: results[11].results,
+    excludePersonal, personalActivity: results[12].results[0],
     gaPropertyId: "465165532", gaMeasurementId: env.GA_MEASUREMENT_ID, gaPdfForwarding: Boolean(env.GA_API_SECRET && env.GA_MEASUREMENT_ID),
     notes: ["PDF requests are retrieval starts, not confirmed reads. Nonzero byte ranges are excluded; anonymous retries can still count twice.",
       "Distinct visitors are estimated browsers, not identified people, using a random 30-day cookie. Only its hash is stored in D1. Old requests have no visitor identifier and cannot be deduplicated.",
-      "Excluded browsers and privacy opt-outs are not recorded. No raw IPs or fingerprints are stored. Bots and cookie restrictions can affect counts."] });
+      "Marked personal activity can be filtered from all report aggregates. Do-not-record browsers and privacy opt-outs are never recorded. No raw IPs or fingerprints are stored."] });
 }
 
 // Public requests stay on the GitHub Pages origin; Cloudflare routes intercept them.
@@ -196,7 +204,7 @@ export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
     if (!HOSTS.has(url.hostname)) return json({ error: "Not found" }, 404);
-    if (url.pathname === "/__analytics/preferences") return preferences(request).catch(() => json({ error: "Preference unavailable" }, 503));
+    if (url.pathname === "/__analytics/preferences") return preferences(request, env).catch(() => json({ error: "Preference unavailable" }, 503));
     if (url.pathname === "/__analytics/report") return report(request, env).catch(() => json({ error: "Analytics unavailable" }, 503));
     if (url.pathname === "/__analytics/event") return collect(request, env, ctx).catch(() => json({ error: "Analytics unavailable" }, 503));
     if (url.pathname === "/__analytics/client.js") return new Response(`(${clientSource})(${JSON.stringify(env.GA_MEASUREMENT_ID || "")});`, { headers: {
@@ -214,7 +222,7 @@ export default {
       if (visitor) {
         const tracked = new Response(response.body, response);
         tracked.headers.append("Set-Cookie", visitor.cookie);
-        if (env.GA_API_SECRET && env.GA_MEASUREMENT_ID) {
+        if (!personalBrowser(request) && env.GA_API_SECRET && env.GA_MEASUREMENT_ID) {
           const identity = pdfIdentity(request);
           background(ctx, sendPdfEvent(request, env, identity, info));
           tracked.headers.append("Set-Cookie", pdfCookie(identity));

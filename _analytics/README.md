@@ -44,19 +44,35 @@ There is no SQL endpoint and alternate Workers hostnames are disabled.
 ## Own Visits And Distinct Browsers
 
 Open `https://www.andrewcwmyers.com/__analytics/preferences` in each browser/profile
-used on the Mac Pro, MacBook Air, and iPhone. Check **Exclude this browser** and save.
-The confirmed page must say **This browser is excluded**. Reload any already-open
-website tabs. The one-year preference cookie follows that browser across networks,
+used on the Mac Pro, MacBook Air, and iPhone. Select **Mark as my activity** and save.
+The confirmed page must say **This browser is marked as your activity**. Reload open
+website tabs. The one-year personal-marker cookie follows that browser across networks,
 but clearing cookies, using a private window, or switching browser profiles requires
 setting it again. An IP exclusion is deliberately not used: it could exclude other
-Stanford/Hoover visitors and would fail when networks change. Uncheck and save to undo.
+Stanford/Hoover visitors and would fail when networks change. Choose **Regular visitor**
+to unmark a browser, or **Do not record this browser** to stop collection altogether.
 The page is never tracked; it needs no account credentials. The Command Center links
-to it through the browser-exclusion settings icon. Native app webviews and Safari/
+to it through **Analytics settings > Set browser exclusion token**. Native app webviews and Safari/
 Chrome may have separate cookie stores: use the browser actually used for the site.
 
-Excluded requests produce no new D1 events or GA4 PDF events. The homepage does not
-load GTM for excluded browsers. Previous events cannot be attributed to the owner
-retroactively, so no historical events are deleted or silently subtracted.
+Personal activity is retained in D1 with `is_personal=1`, but is not forwarded to
+GA4 and does not load GTM. The **Exclude my activity** dashboard switch is a display
+filter, enabled by default and remembered locally. It applies to every total, tab,
+detail panel, chart and CSV export. Turning it off includes personal activity.
+The authenticated report's `excludePersonal=1|0` flag is validated end to end, and
+server/offline caches cannot substitute the opposite filter's data.
+
+Marking a browser also registers the SHA-256 hash of its existing random visitor
+cookie in `personal_visitors`, allowing previously recorded events with that same
+identity to be filtered. No IP, location or browser heuristic is used to guess
+ownership. Earlier anonymous events remain unclassified, not deleted. Unmarking
+rotates the visitor identity so future regular visits are not silently filtered.
+The settings menu reports the number of identified personal events in the period.
+
+**Do not record** retains the original opt-out behavior: no D1 or GA4 activity.
+Existing opt-out cookies are not automatically converted into personal recording.
+DNT/GPC always stop recording, even for marked personal browsers. Setting a marker
+does not restore events that were never collected.
 
 Eligible HTML/PDF requests and browser events receive a random Secure/HttpOnly/SameSite=Lax first-party
 `__Host-acw_visitor` cookie lasting 30 days after the last tracked request. Only a SHA-256
@@ -96,8 +112,8 @@ Browser events send only the landing referrer's origin, rather than incorrectly
 using the collector endpoint's same-site Referer header. Only the domain is stored.
 Migration `0002_referrer_status.sql` preserves all historic counts without guessing
 the sources of unclassified events. Detail tables show at most 50 groups per dimension.
-The top **Exclude my activity** button opens the per-browser preference page; it is
-not a retroactive or device-wide filter.
+Migration `0003_personal_activity.sql` adds personal-event classification and a
+hashed browser-identity registry without guessing the owner of historic events.
 
 No raw IPs or browser fingerprints are stored. IPs are used only by Cloudflare's
 ephemeral rate limiter. DNT/GPC opt-outs are honored by this collector. Browser

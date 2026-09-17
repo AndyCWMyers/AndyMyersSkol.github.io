@@ -58,11 +58,12 @@ Excluded requests produce no new D1 events or GA4 PDF events. The homepage does 
 load GTM for excluded browsers. Previous events cannot be attributed to the owner
 retroactively, so no historical events are deleted or silently subtracted.
 
-Eligible PDF requests receive a random Secure/HttpOnly/SameSite=Lax first-party
-`__Host-acw_visitor` cookie lasting 30 days after the last PDF request. Only a SHA-256
+Eligible HTML/PDF requests and browser events receive a random Secure/HttpOnly/SameSite=Lax first-party
+`__Host-acw_visitor` cookie lasting 30 days after the last tracked request. Only a SHA-256
 hash of this random value is stored in D1, never an IP-derived fingerprint or the
 raw cookie. Reports return distinct counts, not hashes. Counts deduplicate across
-the selected date range and per document. These are **estimated browsers, not
+the selected date range and per document or outbound destination. Dashboard labels
+use **Distinct users**, with the cookie limitations in tooltips. These are **estimated browsers, not
 identified people**. Different devices, cleared/blocked cookies, private windows,
 and unrecognized bots can inflate them; shared browser profiles can merge people.
 Browser cookie policies may shorten the lifetime. DNT/GPC and exclusions still apply.
@@ -71,6 +72,32 @@ Visitor hashes were introduced prospectively on September 16, 2026 (Pacific).
 Historical rows retain an empty hash. Reports expose their unidentified-request
 count; the dashboard shows **Not measured** for historic-only data and an asterisk
 when distinct counts omit some requests. No fabricated visitor backfill is used.
+
+## Dashboard Details
+
+The original tabs remain. Homepage and CV are pinned first in Papers & CV, followed
+by current public papers (including those with no views). Maintain `src/documents.mjs`
+when changing public paper titles or links; its tests verify titles and local assets.
+Unlisted PDFs with activity also appear under their paths. Selecting a page, paper,
+CV, or outbound destination opens a right-side panel with country/region, inbound
+source, browser, device, and available campaign aggregates for that item and period.
+The time chart is at the bottom. All main figures and detail queries exclude bots.
+PDF link clicks and HTML request logs are not added to document-view counts.
+
+The same first-party visitor identity now covers visible page views and outbound
+clicks, not only PDF requests. HTML responses establish it before the browser script
+runs; a collector response also sets it for previously cached pages. No identifiers
+are returned by the report endpoint. Historic missing identities remain unknown.
+
+Inbound sources distinguish **Direct** (a captured request with no referrer supplied)
+from **Unknown** (missing/invalid capture, including older browser events). Direct
+does not prove someone typed a URL: privacy policies and apps may strip referrers.
+Browser events send only the landing referrer's origin, rather than incorrectly
+using the collector endpoint's same-site Referer header. Only the domain is stored.
+Migration `0002_referrer_status.sql` preserves all historic counts without guessing
+the sources of unclassified events. Detail tables show at most 50 groups per dimension.
+The top **Exclude my activity** button opens the per-browser preference page; it is
+not a retroactive or device-wide filter.
 
 No raw IPs or browser fingerprints are stored. IPs are used only by Cloudflare's
 ephemeral rate limiter. DNT/GPC opt-outs are honored by this collector. Browser

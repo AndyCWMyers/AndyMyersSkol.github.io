@@ -78,6 +78,6 @@ test("browser obtains GA identifiers through the Google tag getter without overw
   const dataLayer = [];
   dataLayer.push = args => { assert.equal(args[0], "get"); args[3](args[2] === "client_id" ? "123.456" : 789); };
   vm.runInNewContext(`(${startAnalytics.toString()})("G-TEST");`, { window: { dataLayer }, document, navigator: { sendBeacon: () => true },
-    location: { pathname: "/" }, Blob, crypto });
+    location: new globalThis.URL("https://www.andrewcwmyers.com/"), URL: globalThis.URL, Blob, crypto });
   assert.match(document.cookie, /^__Host-acw_ga=123\.456\|789\|\d+; Path=\/; Secure; SameSite=Lax; Max-Age=1800$/);
 });

@@ -6,7 +6,12 @@ export default String.raw`function startAnalytics(measurementId) {
   function send(kind, target = "") {
     if ((document.cookie || "").split(";").some(part => part.trim() === "__Host-acw_ignore=1")) return;
     if (document.visibilityState !== "visible") return;
-    const body = JSON.stringify({ id: crypto.randomUUID(), kind, path: location.pathname, target });
+    const query = new URL(location.href).searchParams;
+    let referrer = document.referrer === "" ? "" : null;
+    try { referrer = new URL(document.referrer).origin; } catch {}
+    const campaign = key => (query.get(key) || "").replace(/[^a-zA-Z0-9_. -]/g, "").slice(0, 100);
+    const body = JSON.stringify({ id: crypto.randomUUID(), kind, path: location.pathname, target, referrer,
+      source: campaign("utm_source"), medium: campaign("utm_medium"), campaign: campaign("utm_campaign") });
     if (!navigator.sendBeacon(endpoint, new Blob([body], { type: "text/plain" }))) {
       fetch(endpoint, { method: "POST", body, keepalive: true }).catch(() => {});
     }

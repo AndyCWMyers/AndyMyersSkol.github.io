@@ -1,6 +1,7 @@
 import clientSource from "./client.mjs";
 import { pdfIdentity, pdfCookie, sendPdfEvent } from "./ga.mjs";
 import { excludedBrowser, preferences, visitorIdentity, visitorHash } from "./preferences.mjs";
+import documents from "./documents.mjs";
 
 // Configuration and bounded, privacy-preserving normalization.
 const HOSTS = new Set(["www.andrewcwmyers.com", "andrewcwmyers.com"]);
@@ -67,22 +68,30 @@ function metadata(request) {
   const cf = request.cf || {};
   const info = agentInfo(request.headers.get("User-Agent") || "");
   // Referrer paths and arbitrary query strings can contain personal information.
-  let referrer = "";
-  try { referrer = new URL(request.headers.get("Referer")).hostname; } catch {}
+  const referrerUrl = cleanUrl(request.headers.get("Referer"));
+  const referrer = referrerUrl ? new URL(referrerUrl).hostname : "";
+  const referrerStatus = referrer ? "known" : request.headers.has("Referer") ? "unknown" : "direct";
   const campaign = (key) => (url.searchParams.get(key) || "").replace(/[^a-zA-Z0-9_. -]/g, "").slice(0, 100);
-  return { ...info, referrer, country: String(cf.country || "").slice(0, 2), region: String(cf.regionCode || "").slice(0, 20),
+  return { ...info, referrer, referrerStatus, country: String(cf.country || "").slice(0, 2), region: String(cf.regionCode || "").slice(0, 20),
     source: campaign("utm_source"), medium: campaign("utm_medium"), campaign: campaign("utm_campaign") };
+}
+
+function browserAttribution(body) {
+  const referrer = cleanUrl(body.referrer);
+  const campaign = key => typeof body[key] === "string" ? body[key].replace(/[^a-zA-Z0-9_. -]/g, "").slice(0, 100) : "";
+  return { referrer: referrer ? new URL(referrer).hostname : "", referrerStatus: referrer ? "known" : body.referrer === "" ? "direct" : "unknown",
+    source: campaign("source"), medium: campaign("medium"), campaign: campaign("campaign") };
 }
 
 async function record(request, env, event) {
   if (!env.DB || optedOut(request)) return;
-  const m = metadata(request);
+  const m = { ...metadata(request), ...event.attribution };
   const visitor = event.visitorId ? await visitorHash(event.visitorId) : "";
   await env.DB.prepare(`INSERT OR IGNORE INTO events
-    (id, occurred_at, kind, path, target, referrer, source, medium, campaign, country, region, browser, device, bot, status, visitor_hash)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    (id, occurred_at, kind, path, target, referrer, source, medium, campaign, country, region, browser, device, bot, status, visitor_hash, referrer_status)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
     .bind(event.id || crypto.randomUUID(), Math.floor(Date.now() / 1000), event.kind, event.path, event.target || "",
-      m.referrer, m.source, m.medium, m.campaign, m.country, m.region, m.browser, m.device, m.bot, event.status || 200, visitor).run();
+      m.referrer, m.source, m.medium, m.campaign, m.country, m.region, m.browser, m.device, m.bot, event.status || 200, visitor, m.referrerStatus).run();
 }
 
 function background(ctx, promise) {
@@ -111,8 +120,12 @@ async function collect(request, env, ctx) {
   if (!KINDS.has(body.kind) || !path || !/^[\da-f-]{36}$/i.test(body.id || "")) return json({ error: "Invalid event" }, 400);
   const target = body.kind === "outbound_click" ? cleanUrl(body.target) : body.kind === "pdf_click" ? cleanPath(body.target) : "";
   if (body.kind !== "page_view" && !target) return json({ error: "Invalid target" }, 400);
-  background(ctx, record(request, env, { id: body.id, kind: body.kind, path, target }));
-  return new Response(null, { status: 204, headers: { "Cache-Control": "no-store" } });
+  const visitor = metadata(request).bot ? null : visitorIdentity(request);
+  background(ctx, record(request, env, { id: body.id, kind: body.kind, path, target, visitorId: visitor?.value,
+    attribution: browserAttribution(body) }));
+  const headers = new Headers({ "Cache-Control": "private, no-store" });
+  if (visitor) headers.append("Set-Cookie", visitor.cookie);
+  return new Response(null, { status: 204, headers });
 }
 
 export function reportDates(url) {
@@ -133,6 +146,23 @@ async function report(request, env) {
   if (!env.DB) return json({ error: "Database unavailable" }, 503);
   const where = "occurred_at >= ? AND occurred_at < ?";
   const query = (sql) => env.DB.prepare(sql).bind(dates.from, dates.until);
+  const activity = `WITH activity AS (
+    SELECT *, CASE WHEN kind = 'outbound_click' THEN 'outbound' ELSE 'main' END AS section,
+      CASE WHEN kind = 'outbound_click' THEN target WHEN path IN ('/index.html', '/index') THEN '/' ELSE path END AS name
+    FROM events WHERE ${where} AND bot = 0 AND kind IN ('page_view', 'pdf_request', 'outbound_click')
+  )`;
+  const counts = `COUNT(*) AS count, COUNT(DISTINCT NULLIF(visitor_hash, '')) AS visitors,
+    COUNT(NULLIF(visitor_hash, '')) AS identifiedRequests, COUNT(*) - COUNT(NULLIF(visitor_hash, '')) AS unidentifiedRequests`;
+  const inboundSource = "CASE WHEN referrer_status = 'known' THEN referrer WHEN referrer_status = 'direct' THEN '__direct__' ELSE '__unknown__' END";
+  // Fixed dimensions stay scoped to each destination; no visitor-level records leave D1.
+  const dimensions = [
+    ["geography", "country", "region"], ["browsers", "browser", "''"], ["devices", "device", "''"],
+    ["sources", inboundSource, "''"], ["campaigns", "source", "medium || CASE WHEN campaign != '' THEN ' / ' || campaign ELSE '' END"],
+  ];
+  const breakdowns = dimensions.map(([dimension, value, detail]) => `SELECT section, name, '${dimension}' AS dimension,
+    ${value} AS value, ${detail} AS detail, ${counts} FROM activity
+    ${dimension === "campaigns" ? "WHERE source != '' OR medium != '' OR campaign != ''" : ""}
+    GROUP BY section, name, ${value}, ${detail}`).join(" UNION ALL ");
   // Only fixed, aggregate queries are exposed. No visitor identifiers or arbitrary SQL.
   const results = await env.DB.batch([
     query(`SELECT kind, bot, COUNT(*) AS count FROM events WHERE ${where} GROUP BY kind, bot`),
@@ -140,19 +170,24 @@ async function report(request, env) {
     query(`SELECT CASE WHEN kind = 'pdf_click' THEN target ELSE path END AS name, kind, COUNT(*) AS count FROM events WHERE ${where} AND bot = 0 AND kind IN ('pdf_request','pdf_click','page_view') GROUP BY name, kind ORDER BY count DESC LIMIT 100`),
     query(`SELECT target AS name, COUNT(*) AS count FROM events WHERE ${where} AND bot = 0 AND kind = 'outbound_click' GROUP BY target ORDER BY count DESC LIMIT 100`),
     query(`SELECT country AS name, COUNT(*) AS count FROM events WHERE ${where} AND bot = 0 AND kind IN ('page_view','pdf_request') GROUP BY country ORDER BY count DESC LIMIT 100`),
-    query(`SELECT referrer AS name, COUNT(*) AS count FROM events WHERE ${where} AND bot = 0 AND kind IN ('page_request','pdf_request') GROUP BY referrer ORDER BY count DESC LIMIT 100`),
+    query(`SELECT ${inboundSource} AS name, COUNT(*) AS count FROM events WHERE ${where} AND bot = 0 AND kind IN ('page_view','pdf_request') GROUP BY name ORDER BY count DESC LIMIT 100`),
     query(`SELECT browser AS name, device, COUNT(*) AS count FROM events WHERE ${where} AND bot = 0 AND kind IN ('page_view','pdf_request') GROUP BY browser, device ORDER BY count DESC`),
     query(`SELECT source, medium, campaign, COUNT(*) AS count FROM events WHERE ${where} AND bot = 0 AND source != '' GROUP BY source, medium, campaign ORDER BY count DESC LIMIT 100`),
     query(`SELECT COUNT(DISTINCT NULLIF(visitor_hash, '')) AS visitors, COUNT(NULLIF(visitor_hash, '')) AS identifiedRequests, COUNT(*) - COUNT(NULLIF(visitor_hash, '')) AS unidentifiedRequests FROM events WHERE ${where} AND bot = 0 AND kind = 'pdf_request'`),
     query(`SELECT path AS name, COUNT(DISTINCT NULLIF(visitor_hash, '')) AS visitors, COUNT(NULLIF(visitor_hash, '')) AS identifiedRequests, COUNT(*) - COUNT(NULLIF(visitor_hash, '')) AS unidentifiedRequests FROM events WHERE ${where} AND bot = 0 AND kind = 'pdf_request' GROUP BY path ORDER BY COUNT(*) DESC LIMIT 100`),
+    query(`${activity} SELECT section, name, ${counts} FROM activity GROUP BY section, name ORDER BY count DESC`),
+    query(`${activity}, breakdowns AS (${breakdowns}), ranked AS (
+      SELECT *, ROW_NUMBER() OVER (PARTITION BY section, name, dimension ORDER BY count DESC, value, detail) AS rank FROM breakdowns
+    ) SELECT section, name, dimension, value, detail, count, visitors, identifiedRequests, unidentifiedRequests FROM ranked WHERE rank <= 50 ORDER BY section, name, dimension, rank`),
   ]);
   const keys = ["totals", "daily", "pages", "outbound", "countries", "referrers", "devices", "campaigns"];
   return json({ generatedAt: new Date().toISOString(), start: dates.start, end: dates.end,
     ...Object.fromEntries(keys.map((key, i) => [key, results[i].results])),
     pdfVisitors: results[8].results[0], pdfVisitorsByPath: results[9].results,
+    documents, items: results[10].results, breakdowns: results[11].results,
     gaPropertyId: "465165532", gaMeasurementId: env.GA_MEASUREMENT_ID, gaPdfForwarding: Boolean(env.GA_API_SECRET && env.GA_MEASUREMENT_ID),
     notes: ["PDF requests are retrieval starts, not confirmed reads. Nonzero byte ranges are excluded; anonymous retries can still count twice.",
-      "Distinct PDF visitors are estimated browsers, not identified people, using a random 30-day cookie. Only its hash is stored in D1. Old requests have no visitor identifier and cannot be deduplicated.",
+      "Distinct visitors are estimated browsers, not identified people, using a random 30-day cookie. Only its hash is stored in D1. Old requests have no visitor identifier and cannot be deduplicated.",
       "Excluded browsers and privacy opt-outs are not recorded. No raw IPs or fingerprints are stored. Bots and cookie restrictions can affect counts."] });
 }
 
@@ -191,6 +226,12 @@ export default {
     }
     if (type.includes("text/html") && response.status === 200) {
       background(ctx, record(request, env, { kind: "page_request", path: url.pathname }));
+      if (!metadata(request).bot) {
+        const tracked = new Response(response.body, response);
+        tracked.headers.append("Set-Cookie", visitorIdentity(request).cookie);
+        tracked.headers.set("Cache-Control", "private, no-cache");
+        return tracked;
+      }
     }
     return response;
   },

@@ -45,6 +45,7 @@ export async function userReport(db, url, dates, personal, excludePersonal, page
         ${personal} AS personal, ROW_NUMBER() OVER (PARTITION BY visitor_hash ORDER BY occurred_at DESC, rowid DESC) AS recent ${base}
     ) SELECT substr(visitor_hash, 1, 24) AS id, COUNT(*) AS events,
       SUM(kind != 'outbound_click' AND occurred_at >= ?1 AND occurred_at < ?2) AS views, SUM(kind = 'outbound_click') AS clicks,
+      SUM(kind = 'pdf_request') AS pdfViews,
       MIN(occurred_at) AS firstSeen, MAX(occurred_at) AS lastSeen, MAX(personal) AS personal,
       MAX(CASE WHEN recent = 1 THEN CASE WHEN path IN ('/index','/index.html') THEN '/' ELSE path END END) AS lastPath,
       MAX(CASE WHEN recent = 1 THEN country END) AS country, MAX(CASE WHEN recent = 1 THEN region END) AS region,
@@ -73,6 +74,7 @@ export async function userReport(db, url, dates, personal, excludePersonal, page
     const byUser = new Map(reading.rows.map(row => [row.id, row]));
     for (const row of visible) {
       const detail = byUser.get(row.id);
+      row.pdfViewerSessions = detail?.pdfViewerSessions ?? 0;
       if (detail) {
         Object.assign(row, detail);
         if (detail.lastReadingAt >= row.lastSeen && detail.lastReadingAt < dates.until) row.lastPath = detail.lastReadingPath;

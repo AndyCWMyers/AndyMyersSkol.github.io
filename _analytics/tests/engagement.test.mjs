@@ -56,6 +56,30 @@ async function report(DB, search) {
   return response.json();
 }
 
+test("user lists distinguish PDF retrievals from confirmed viewer sessions without updates", async () => {
+  const { DB, db } = database();
+  const id = await session(db, DB);
+  const insert = db.prepare("INSERT INTO events(id,occurred_at,kind,path,visitor_hash) VALUES(?,?,?,?,?)");
+  insert.run("raw", midnight + 10, "pdf_request", PDF, "b".repeat(64));
+  insert.run("home", midnight + 10, "page_view", "/", "c".repeat(64));
+  const waitingId = crypto.randomUUID();
+  insert.run(waitingId, midnight + 10, "pdf_request", PDF, "d".repeat(64));
+  await startReading(DB, waitingId, "d".repeat(64));
+  // An older viewer session does not confirm this period's new raw retrieval.
+  insert.run("later-raw", midnight + 10, "pdf_request", PDF, visitor);
+  let result = await report(DB, "view=users&start=2026-09-17&end=2026-09-17");
+  const row = prefix => result.rows.find(value => value.id === prefix.repeat(24));
+  assert.equal(row("a").pdfViewerSessions, 0);
+  assert.equal(row("b").pdfViews, 1); assert.equal(row("b").pdfViewerSessions, 0);
+  assert.equal(row("c").pdfViews, 0); assert.equal(row("c").pdfViewerSessions, 0);
+  assert.equal(row("d").pdfViews, 1); assert.equal(row("d").pdfViewerSessions, 1);
+  assert.equal(row("d").measuredPdfViews, 0);
+  await saveReading(DB, snapshot(id), visitor, now);
+  result = await report(DB, "view=users&start=2026-09-17&end=2026-09-17");
+  assert.equal(row("a").pdfViewerSessions, 1);
+  assert.equal(row("a").measuredPdfViews, 1);
+});
+
 test("page filters scope every aggregate while user cohorts retain full histories", async () => {
   const { DB, db } = database();
   const insert = db.prepare("INSERT INTO events(id,occurred_at,kind,path,target,visitor_hash,country,region,city,browser,device,referrer_status,is_personal) VALUES(?,?,?,?,?,?,'US','CA','Stanford','Chrome','Desktop','direct',?)");

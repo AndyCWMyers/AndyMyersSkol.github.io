@@ -66,13 +66,13 @@ function checkTotals(body) {
 }
 
 test("startup sends immediate active snapshot with current zero hour; no cookie/storage/GA writes", async () => {
-  const h = browser({ cookie: "__Host-acw_personal=1" });
+  const h = browser({ cookie: "unrelated=1" });
   await settle();
   assert.equal(h.requests.length, 1);
   assert.equal(latest(h).active, true);
   assert.equal(latest(h).milliseconds, 0);
   assert.equal(latest(h).hours.length, 1);
-  assert.equal(h.document.cookie, "__Host-acw_personal=1");
+  assert.equal(h.document.cookie, "unrelated=1");
   assert.equal(h.requests[0].options.credentials, "same-origin");
   assert.equal(h.requests[0].options.keepalive, true);
   assert.doesNotMatch(source, /localStorage|sessionStorage|gtag|dataLayer|document\.cookie\s*=/);
@@ -106,6 +106,25 @@ test("five-minute checkpoints have no inactivity cutoff; blur/hide pause and BFC
   const count = h.requests.length;
   await h.tick();
   assert.equal(h.requests.length, count);
+});
+
+test("host browsers send no engagement; marking an open page stops accrual and retries", async () => {
+  const host = browser({ cookie: "other=1; __Host-acw_personal=1" });
+  host.handle.download();
+  await host.tick(300000);
+  await host.visible(false);
+  host.handle.stop();
+  assert.equal(host.requests.length, 0);
+  assert.equal(host.tasks.size, 0);
+  const h = browser({ fetcher: async () => ({ ok: false }) });
+  await settle();
+  h.document.cookie = "__Host-acw_personal=1";
+  await h.tick(1000);
+  h.handle.download();
+  await h.focus(false);
+  h.handle.stop();
+  await h.tick(300000);
+  assert.equal(h.requests.length, 1);
 });
 
 test("UTC-hour and Pacific-midnight intervals split exactly; downloads belong to action hour", async () => {

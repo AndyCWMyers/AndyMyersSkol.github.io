@@ -10,7 +10,7 @@ export default String.raw`(() => {
   function allowed() {
     return !navigator.globalPrivacyControl && navigator.doNotTrack !== "1" &&
       window.doNotTrack !== "1" && navigator.msDoNotTrack !== "1" &&
-      !(document.cookie || "").split(";").some(part => part.trim() === "__Host-acw_ignore=1");
+      !(document.cookie || "").split(";").some(part => ["__Host-acw_ignore=1", "__Host-acw_personal=1"].includes(part.trim()));
   }
 
   // Retries reuse the exact sequence/body. Newer cumulative snapshots may arrive first.

@@ -145,10 +145,13 @@ test("live users require a current active check-in and respect page and personal
 
 test("headline engagement includes homepage time and honors page and personal filters", async () => {
   const { DB, db } = database();
-  const pdf = await session(db, DB), home = await session(db, DB, { path: "/", kind: "page_view" }), own = await session(db, DB, { personal: 1 });
+  const pdf = await session(db, DB), home = await session(db, DB, { path: "/", kind: "page_view" }), own = await session(db, DB);
   await saveReading(DB, snapshot(pdf), visitor, now);
   await saveReading(DB, snapshot(home, { downloads: 0, hours: [{ hour: midnight, milliseconds: 300000, downloads: 0 }] }), visitor, now);
   await saveReading(DB, snapshot(own), visitor, now);
+  // Historical personal measurements remain available after collection stops.
+  db.prepare("UPDATE reading_sessions SET is_personal=1 WHERE id=?").run(own);
+  db.prepare("UPDATE events SET is_personal=1 WHERE id=?").run(own);
   const suffix = "start=2026-09-17&end=2026-09-17";
   assert.deepEqual((await report(DB, `view=summary&${suffix}`)).engagement, { readingSeconds: 480, downloads: 1 });
   assert.deepEqual((await report(DB, `view=summary&excludePersonal=0&${suffix}`)).engagement, { readingSeconds: 660, downloads: 2 });
@@ -213,6 +216,19 @@ test("personal activity stays stored and can be excluded retroactively", async (
   assert.equal((await historyReading(DB, dates("2026-09-17"), true, [id])).rows.length, 0);
   assert.equal((await readingItems(DB, dates("2026-09-17"), false)).rows[0].readingSeconds, 180);
   assert.equal(db.prepare("SELECT COUNT(*) AS n FROM reading_sessions").get().n, 1);
+  const changes = db.prepare("SELECT total_changes() AS n").get().n;
+  assert.equal(await saveReading(DB, snapshot(id, { seq: 2 }), visitor, now), 204);
+  assert.equal(db.prepare("SELECT total_changes() AS n").get().n, changes);
+  assert.equal(db.prepare("SELECT seq FROM reading_sessions").get().seq, 1);
+});
+
+test("personal sessions keep viewer confirmation but never save reading or downloads", async () => {
+  const { DB, db } = database(), id = await session(db, DB, { personal: 1 });
+  const changes = db.prepare("SELECT total_changes() AS n").get().n;
+  assert.equal(await saveReading(DB, snapshot(id), visitor, now), 204);
+  assert.equal(db.prepare("SELECT total_changes() AS n").get().n, changes);
+  assert.equal(db.prepare("SELECT seq FROM reading_sessions").get().seq, -1);
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM reading_hours").get().n, 0);
 });
 
 test("homepage time stays separate, tracked zero differs from historical not measured", async () => {
@@ -304,7 +320,7 @@ test("engagement endpoint enforces origin, identity, privacy and rate limits", a
   assert.equal((await call({ Origin: "https://evil.example" })).status, 403);
   assert.equal((await call({ Cookie: "" })).status, 404);
   assert.equal((await call({}, { COLLECT_LIMIT: { limit: async () => ({ success: false }) } })).status, 429);
-  for (const headers of [{ DNT: "1" }, { "Sec-GPC": "1" }, { Cookie: "__Host-acw_ignore=1" }, { "User-Agent": "Googlebot" }]) assert.equal((await call(headers)).status, 204);
+  for (const headers of [{ DNT: "1" }, { "Sec-GPC": "1" }, { Cookie: "__Host-acw_ignore=1" }, { Cookie: `__Host-acw_personal=1; __Host-acw_visitor=${cookieId}` }, { "User-Agent": "Googlebot" }]) assert.equal((await call(headers)).status, 204);
   assert.equal(db.prepare("SELECT seq FROM reading_sessions").get().seq, -1);
   assert.equal((await call()).status, 204);
   assert.equal(db.prepare("SELECT seq FROM reading_sessions").get().seq, 1);

@@ -79,7 +79,12 @@ Downloads count PDF.js toolbar/keyboard download requests, not verified saved
 files. Browser-menu Save As, cancelled saves, offline reading, native fallback
 reading time and reading outside this viewer cannot be measured reliably. Print
 actions do not count as downloads. Privacy signals/opt-outs suppress all these
-events; marked personal activity remains recorded and display-filterable.
+events. Marked personal browsers retain views and viewer-session confirmation, but
+do not send reading-time/download updates or periodic live check-ins. The Worker
+also discards personal engagement updates (including older cached clients), using
+the host cookie, session marker, and personal-visitor registry. Historical personal
+measurements remain stored and display-filterable; no data is deleted. Personal
+sessions without measurements show Not measured, not zero.
 Reading updates stay in private D1, not GA4; a rendered PDF view is forwarded to
 GA4 once through the existing server integration.
 

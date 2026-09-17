@@ -190,7 +190,7 @@ async function collect(request, env, ctx) {
 async function engagement(request, env) {
   if (request.method !== "POST") return json({ error: "Method not allowed" }, 405);
   if (request.headers.get("Origin") !== new URL(request.url).origin) return json({ error: "Forbidden" }, 403);
-  if (optedOut(request) || metadata(request).bot) return new Response(null, { status: 204, headers: JSON_HEADERS });
+  if (optedOut(request) || personalBrowser(request) || metadata(request).bot) return new Response(null, { status: 204, headers: JSON_HEADERS });
   if (!env.DB) return json({ error: "Database unavailable" }, 503);
   if (env.COLLECT_LIMIT && !(await env.COLLECT_LIMIT.limit({ key: `reading:${request.headers.get("CF-Connecting-IP") || "unknown"}` })).success) return json({ error: "Rate limited" }, 429);
   let body;

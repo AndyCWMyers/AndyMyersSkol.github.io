@@ -31,9 +31,12 @@ export function validReading(body, now = Date.now()) {
 
 export async function saveReading(db, body, visitor, now = Date.now()) {
   if (!validReading(body, now)) return 400;
-  const stored = await db.prepare("SELECT * FROM reading_sessions WHERE id = ? AND visitor_hash = ?").bind(body.id, visitor).all();
+  const stored = await db.prepare(`SELECT s.*, ${PERSONAL} AS personal FROM reading_sessions s
+    WHERE s.id = ? AND s.visitor_hash = ?`).bind(body.id, visitor).all();
   const session = stored.results[0];
   if (!session || !KINDS.has(session.kind)) return 404;
+  // Keep viewer confirmation and historical measurements, but never add host engagement.
+  if (session.personal) return 204;
   if (body.seq <= session.seq) return 204;
   if (body.milliseconds < session.milliseconds || body.downloads < session.downloads
     || body.milliseconds > now - session.started_at * 1000 + 60000

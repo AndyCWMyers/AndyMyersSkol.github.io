@@ -44,16 +44,22 @@ There is no SQL endpoint and alternate Workers hostnames are disabled.
 ## Own Visits And Distinct Browsers
 
 Open `https://www.andrewcwmyers.com/__analytics/preferences` in each browser/profile
-used on the Mac Pro, MacBook Air, and iPhone. Select **Mark as my activity** and save.
-The confirmed page must say **This browser is marked as your activity**. Reload open
+used on the Mac Pro, MacBook Air, and iPhone. Check **Host**; changes save automatically.
+The checkbox reflects the saved cookie after the page reloads. Reload open
 website tabs. The one-year personal-marker cookie follows that browser across networks,
 but clearing cookies, using a private window, or switching browser profiles requires
 setting it again. An IP exclusion is deliberately not used: it could exclude other
-Stanford/Hoover visitors and would fail when networks change. Choose **Regular visitor**
-to unmark a browser, or **Do not record this browser** to stop collection altogether.
+Stanford/Hoover visitors and would fail when networks change. Uncheck **Host**
+to unmark a browser; both states retain activity rather than disabling collection.
 The page is never tracked; it needs no account credentials. The Command Center links
-to it through **Analytics settings > Set browser exclusion token**. Native app webviews and Safari/
+to it through **Analytics settings > Host browser setting**. Native app webviews and Safari/
 Chrome may have separate cookie stores: use the browser actually used for the site.
+
+The page contains only the Host checkbox and is absent from homepage links and the
+sitemap. It sends both an `X-Robots-Tag: noindex, nofollow` header and a matching
+robots meta tag. Do not disallow crawling in robots.txt: Google must fetch the page
+to see noindex. This is not access control; the public repository exposes its URL.
+The page only marks the visiting browser and never grants access to private reports.
 
 Personal activity is retained in D1 with `is_personal=1` and forwarded to GA4 with
 the event parameter `personal_activity=yes` (`no` for regular visitors). The homepage
@@ -80,8 +86,9 @@ ownership. Earlier anonymous events remain unclassified, not deleted. Unmarking
 rotates the visitor identity so future regular visits are not silently filtered.
 The settings menu reports the number of identified personal events in the period.
 
-**Do not record** retains the original opt-out behavior: no D1 or GA4 activity.
-Existing opt-out cookies are not automatically converted into personal recording.
+The former **Do not record** option is no longer shown. Existing opt-out cookies
+are still honored until the visitor explicitly changes the Host setting; legacy
+form POSTs remain supported for already-open pages.
 DNT/GPC always stop recording, even for marked personal browsers. Setting a marker
 does not restore events that were never collected.
 

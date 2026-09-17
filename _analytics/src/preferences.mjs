@@ -3,7 +3,8 @@ const PERSONAL_COOKIE = "__Host-acw_personal";
 const VISITOR_COOKIE = "__Host-acw_visitor";
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 // Preserve the origin on this page's same-origin form POST, without external referrers.
-const HEADERS = { "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff", "Referrer-Policy": "same-origin" };
+const HEADERS = { "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff", "Referrer-Policy": "same-origin",
+  "X-Robots-Tag": "noindex, nofollow" };
 
 export function cookieValue(request, name) {
   const prefix = `${name}=`;
@@ -52,10 +53,10 @@ export async function preferences(request, env = {}) {
     if (Number(request.headers.get("Content-Length")) > 64) return new Response("Invalid preference", { status: 400, headers: HEADERS });
     let body;
     try { body = await preferenceBody(request); } catch { return new Response("Invalid preference", { status: 400, headers: HEADERS }); }
-    const modes = { "exclude=1": "excluded", "": "included", "mode=excluded": "excluded", "mode=included": "included", "mode=personal": "personal" };
+    const modes = { "host=1": "personal", "exclude=1": "excluded", "": "included", "mode=excluded": "excluded", "mode=included": "included", "mode=personal": "personal" };
     if (!Object.hasOwn(modes, body)) return new Response("Invalid preference", { status: 400, headers: HEADERS });
     const mode = modes[body], exclude = mode === "excluded", personal = mode === "personal";
-    const headers = new Headers({ ...HEADERS, Location: `/__analytics/preferences?saved=${mode}` });
+    const headers = new Headers({ ...HEADERS, Location: "/__analytics/preferences" });
     if (personal) {
       if (!env.DB) return new Response("Preference unavailable", { status: 503, headers: HEADERS });
       const visitor = visitorIdentity(request);
@@ -73,24 +74,17 @@ export async function preferences(request, env = {}) {
     }
     return new Response(null, { status: 303, headers });
   }
-  if (request.method !== "GET") return new Response("Method not allowed", { status: 405, headers: HEADERS });
+  if (!["GET", "HEAD"].includes(request.method)) return new Response("Method not allowed", { status: 405, headers: HEADERS });
   const excluded = excludedBrowser(request);
   const personal = personalBrowser(request);
-  const privacySignal = request.headers.get("DNT") === "1" || request.headers.get("Sec-GPC") === "1";
-  const saved = url.searchParams.get("saved");
-  const failed = (saved === "excluded" && !excluded) || (saved === "personal" && !personal);
-  const status = failed ? "Preference was not saved. Check this browser's cookie settings." : privacySignal ? "This browser sends a privacy opt-out signal; activity is not recorded." : excluded ? "This browser is excluded. Activity is not recorded." : personal ? "This browser is marked as your activity." : "This browser is included.";
-  return new Response(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Analytics Preferences | Andrew C. W. Myers</title><style>
-body{margin:0;padding:48px 24px;color:#273437;background:#fafbfb;font:16px/1.6 system-ui,sans-serif;letter-spacing:0}main{max-width:560px;margin:auto}h1{font-size:26px;line-height:1.3}p{margin:20px 0}form{border-block:1px solid #d7dfdf;padding:24px 0}label{display:flex;gap:12px;align-items:center;margin:12px 0}input{width:20px;height:20px;flex:0 0 20px;accent-color:#176b64}button{display:block;margin-top:24px;padding:10px 16px;font:inherit;border:1px solid #176b64;border-radius:4px;background:#176b64;color:white;cursor:pointer}a{color:#176b64}small{display:block;color:#59676b;margin-top:24px}form small{margin:6px 0 20px;font-size:13px}
-</style></head><body><main><a href="/">Andrew C. W. Myers</a><h1>Analytics preferences</h1><p role="status">${status}</p>
+  const nonce = crypto.randomUUID();
+  return new Response(request.method === "HEAD" ? null : `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow"><title>Host</title><style>
+body{margin:0;padding:48px 24px;color:#273437;background:#fafbfb;font:16px/1.6 system-ui,sans-serif;letter-spacing:0}main{max-width:560px;margin:auto}label{display:inline-flex;gap:12px;align-items:center;min-height:44px;cursor:pointer}input{margin:0;width:20px;height:20px;flex:0 0 20px;accent-color:#176b64}
+</style></head><body><main>
 <form method="post" action="/__analytics/preferences">
-<label><input type="radio" name="mode" value="included" ${!excluded && !personal ? "checked" : ""}>Regular visitor</label>
-<label><input type="radio" name="mode" value="personal" ${personal && !excluded ? "checked" : ""}>Mark as my activity</label>
-<small>Personal activity is retained in the private dashboard and Google Analytics with a personal-activity label, so it can be included or excluded in reports without discarding it.</small>
-<label><input type="radio" name="mode" value="excluded" ${excluded ? "checked" : ""}>Do not record this browser</label>
-<button type="submit">Save preference</button></form>
-<small>These preferences apply to page views, PDF requests and link clicks. Mark each browser/profile separately and reload open website tabs after saving. Clearing cookies resets the preference. Older visits without an identifiable browser cannot be classified as yours. Privacy opt-out signals always stop collection.</small>
-</main></body></html>`, { headers: { ...HEADERS, "Content-Type": "text/html; charset=utf-8",
-    "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'" } });
+<label><input type="checkbox" name="host" value="1" ${personal && !excluded ? "checked" : ""}>Host</label>
+</form></main><script nonce="${nonce}">document.querySelector("input").addEventListener("change", function () { this.form.requestSubmit(); });</script>
+</body></html>`, { headers: { ...HEADERS, "Content-Type": "text/html; charset=utf-8",
+    "Content-Security-Policy": `default-src 'none'; script-src 'nonce-${nonce}'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'` } });
 }

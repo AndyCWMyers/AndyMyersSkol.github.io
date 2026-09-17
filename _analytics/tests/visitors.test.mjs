@@ -42,7 +42,7 @@ test("visitor cookies are random, first-party, bounded and unrelated to IP addre
 test("preferences use same-origin POST, never count page visits, and can be reversed", async () => {
   const s = setup();
   const get = await s.request("/__analytics/preferences");
-  assert.match(await get.text(), /This browser is included/);
+  assert.match(await get.text(), /type="checkbox" name="host" value="1" >Host/);
   assert.equal(get.headers.get("Cache-Control"), "private, no-store");
   assert.equal(get.headers.get("Referrer-Policy"), "same-origin");
   assert.equal((await s.request("/__analytics/preferences", { Origin: "https://evil.example" }, { method: "POST", body: "exclude=1" })).status, 403);
@@ -56,12 +56,56 @@ test("preferences use same-origin POST, never count page visits, and can be reve
   assert.equal(exclude.status, 303);
   assert.match(exclude.headers.get("Set-Cookie"), /__Host-acw_ignore=1/);
   assert.match(exclude.headers.get("Set-Cookie"), /__Host-acw_visitor=;.*Max-Age=0/);
-  assert.match(await (await s.request("/__analytics/preferences", { Cookie: "__Host-acw_ignore=1" })).text(), /This browser is excluded/);
-  assert.match(await (await s.request("/__analytics/preferences?saved=excluded")).text(), /Preference was not saved/);
+  assert.match(await (await s.request("/__analytics/preferences", { Cookie: "__Host-acw_ignore=1" })).text(), /value="1" >Host/);
+  assert.match(await (await s.request("/__analytics/preferences?saved=excluded")).text(), /value="1" >Host/);
   const include = await s.request("/__analytics/preferences", { Origin: ROOT }, { method: "POST", body: "" });
   assert.match(include.headers.get("Set-Cookie"), /__Host-acw_ignore=;.*Max-Age=0/);
   await s.finish();
   assert.equal(s.db.prepare("SELECT COUNT(*) AS count FROM events").get().count, 0);
+});
+
+test("host page is unlinked, noindex, and contains only an auto-saving checkbox", async () => {
+  const s = setup();
+  const response = await s.request("/__analytics/preferences", { Cookie: "__Host-acw_personal=1" });
+  const html = await response.text();
+  assert.equal(response.headers.get("X-Robots-Tag"), "noindex, nofollow");
+  assert.match(html, /<meta name="robots" content="noindex, nofollow">/);
+  assert.match(html, /value="1" checked>Host/);
+  assert.equal((html.match(/<input\b/g) || []).length, 1);
+  assert.doesNotMatch(html, /<a\b|<button\b|<p\b|<h1\b|type="radio"|Do not record|Regular visitor/);
+  const [, nonce, source] = html.match(/<script nonce="([^"]+)">([\s\S]*?)<\/script>/);
+  assert.ok(response.headers.get("Content-Security-Policy").includes(`script-src 'nonce-${nonce}'`));
+  let submitted = 0;
+  const input = { form: { requestSubmit: () => submitted++ }, addEventListener: (event, fn) => {
+    assert.equal(event, "change"); fn.call(input);
+  } };
+  vm.runInNewContext(source, { document: { querySelector: selector => { assert.equal(selector, "input"); return input; } } });
+  assert.equal(submitted, 1);
+  for (const file of ["index.html", "sitemap.xml"]) {
+    assert.equal(readFileSync(new URL(`../../${file}`, import.meta.url), "utf8").includes("/__analytics/preferences"), false);
+  }
+  const head = await s.request("/__analytics/preferences", {}, { method: "HEAD" });
+  assert.equal(head.status, 200);
+  assert.equal(await head.text(), "");
+  assert.equal(head.headers.get("X-Robots-Tag"), "noindex, nofollow");
+  const invalid = await s.request("/__analytics/preferences", { Origin: ROOT }, { method: "POST", body: "host=2" });
+  assert.equal(invalid.status, 400);
+  assert.equal(invalid.headers.get("X-Robots-Tag"), "noindex, nofollow");
+});
+
+test("Host checkbox saves both states without losing earlier personal history", async () => {
+  const s = setup();
+  const marked = await s.request("/__analytics/preferences", { Origin: ROOT, Cookie: `__Host-acw_ignore=1; __Host-acw_visitor=${A}` }, { method: "POST", body: "host=1" });
+  assert.equal(marked.status, 303);
+  assert.equal(marked.headers.get("Location"), "/__analytics/preferences");
+  assert.equal(marked.headers.get("X-Robots-Tag"), "noindex, nofollow");
+  assert.match(marked.headers.get("Set-Cookie"), /__Host-acw_personal=1/);
+  assert.match(marked.headers.get("Set-Cookie"), /__Host-acw_ignore=;.*Max-Age=0/);
+  const unmarked = await s.request("/__analytics/preferences", { Origin: ROOT, Cookie: `__Host-acw_personal=1; __Host-acw_visitor=${A}` }, { method: "POST", body: "" });
+  assert.match(unmarked.headers.get("Set-Cookie"), /__Host-acw_personal=;.*Max-Age=0/);
+  assert.match(unmarked.headers.get("Set-Cookie"), /__Host-acw_visitor=;.*Max-Age=0/);
+  assert.equal(s.db.prepare("SELECT visitor_hash FROM personal_visitors").get().visitor_hash, await visitorHash(A));
+  assert.equal(s.db.prepare("SELECT COUNT(*) AS n FROM events").get().n, 0);
 });
 
 test("excluded browsers produce no PDF, page, click, GA events or new identity cookies", async () => {

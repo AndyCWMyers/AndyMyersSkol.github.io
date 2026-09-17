@@ -149,6 +149,21 @@ Initial Overview and the default state map use four SQL queries total instead of
 nineteen; tab/map switches and destination details fetch on demand. All queries
 preserve date, personal, bot, duplicate and distinct-browser semantics.
 
+Migration `0010_headline_summaries.sql` maintains hourly event counters and
+visitor memberships with atomic SQLite triggers. `view=summary` reads these
+compact tables, not raw events. Exact distinct counts deduplicate visitor hashes
+across the selected range; hourly/daily distinct counts are never added together.
+Pacific midnight aligns with hourly UTC buckets even across daylight saving time.
+The personal-browser registry is applied at read time, so marking a browser still
+filters its earlier known-identity visits. Unidentified requests stay unidentified.
+The migration backfills existing counts without changing any raw event. Inserts,
+updates and deletes keep both summaries consistent, excluding flagged duplicates.
+This trades up to two additional summary-row writes per counted event for cheaper
+headline reads. Exact distinct counts still read compact visitor memberships and
+can approach one membership per view when every visitor is new; they are not a
+constant-cost counter. Other tabs and explicit full-report exports retain their
+existing event queries. The summaries can be checked against `view=all`.
+
 Authenticated responses include `queryUsage` with named query counts, rows read,
 rows written and duration from D1 metadata (null when unavailable). No SQL, tokens,
 IPs or visitor identities are included in these diagnostics. Cache hits reuse the

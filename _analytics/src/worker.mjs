@@ -7,6 +7,7 @@ import { TIME_ZONE, pacificDate, pacificMidnight, pacificDaily } from "./time.mj
 import { estimatedCounty } from "./geography.mjs";
 import { connectingIp } from "./ip.mjs";
 import { QUERY_NAMES, REPORT_PLANS, queryUsage } from "./report-plan.mjs";
+import { headlineSummary } from "./summary.mjs";
 
 // Configuration and bounded, privacy-preserving normalization.
 const HOSTS = new Set(["www.andrewcwmyers.com", "andrewcwmyers.com"]);
@@ -179,6 +180,12 @@ async function report(request, env) {
   }
   const view = url.searchParams.get("view") || "all";
   if (!Object.hasOwn(REPORT_PLANS, view)) return json({ error: "Invalid report view" }, 400);
+  if (view === "summary") {
+    const summary = await headlineSummary(env.DB, dates, excludePersonal);
+    return json({ generatedAt: new Date().toISOString(), timeZone: TIME_ZONE, start: dates.start, end: dates.end,
+      excludePersonal, documents, gaPropertyId: "465165532", gaMeasurementId: env.GA_MEASUREMENT_ID,
+      gaPdfForwarding: Boolean(env.GA_API_SECRET && env.GA_MEASUREMENT_ID), view, ...summary });
+  }
   const section = url.searchParams.get("section") || "", name = url.searchParams.get("name") || "";
   if (view === "detail" && (!["main", "outbound"].includes(section) || !name || name.length > 2048)) return json({ error: "Invalid detail query" }, 400);
   const mainPath = "CASE WHEN path IN ('/index.html', '/index') THEN '/' ELSE path END";

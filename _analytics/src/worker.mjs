@@ -11,6 +11,7 @@ import { headlineSummary } from "./summary.mjs";
 import { startReading, saveReading, readingItems, addReadingItems } from "./engagement.mjs";
 import engagementSource from "./engagement-client.mjs";
 import { pdfViewerResponse, isPdfNavigation } from "./pdf-viewer.mjs";
+import { readUsage } from "./usage.mjs";
 
 // Configuration and bounded, privacy-preserving normalization.
 const HOSTS = new Set(["www.andrewcwmyers.com", "andrewcwmyers.com"]);
@@ -192,6 +193,7 @@ async function report(request, env) {
   if (!await authorized(request, env.READ_TOKEN)) return json({ error: "Unauthorized" }, 401);
   if (request.method !== "GET") return json({ error: "Method not allowed" }, 405);
   const url = new URL(request.url);
+  if (url.searchParams.get("view") === "usage") return json(await readUsage(env));
   const dates = reportDates(url);
   if (!dates) return json({ error: "Invalid date range (maximum 366 days)" }, 400);
   if (!env.DB) return json({ error: "Database unavailable" }, 503);

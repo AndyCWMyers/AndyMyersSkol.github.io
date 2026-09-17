@@ -83,8 +83,8 @@ events; marked personal activity remains recorded and display-filterable.
 Reading updates stay in private D1, not GA4; a rendered PDF view is forwarded to
 GA4 once through the existing server integration.
 
-Papers & CV and charts expose reading hours and downloads, with dashes for the
-homepage. Profiles separately show PDF reading time, homepage time and downloads,
+Papers & CV and charts expose reading hours including the homepage; downloads
+remain PDF-only with a dash for the homepage. Profiles separately show PDF reading time, homepage time and downloads,
 plus per-view measurements. PDF history labels distinguish tracked viewer sessions,
 sessions without reading updates, and requests with no tracked viewer session.
 Missing updates remain Not measured, including sessions created without a first
@@ -386,6 +386,29 @@ duration is invented. The Command Center uses independent Cloudflare aggregates;
 GA4 historical reports remain in Google Analytics. GA4 Data API import is not set up.
 
 ## Limits And Recovery
+
+The authenticated report endpoint's `view=usage` reads Cloudflare's GraphQL
+account metrics without querying D1. A dedicated Account Analytics:Read token
+for this account is stored only as the encrypted `CF_USAGE_TOKEN` Worker secret.
+`CF_ACCOUNT_ID` and `CF_DATABASE_ID` identify the account and website database.
+The Command Center Controls sidebar requests this only when opened, with
+five-minute in-memory caches and coalesced pending reads at the Worker and host.
+Errors remain unavailable, not fabricated zero usage; usage is not stored in
+the browser's offline cache. Visitor/page/personal filters do not affect it.
+
+The rolling 30-day report groups Worker requests and D1 rows read/written by UTC
+day, matching the daily reset rather than the dashboard's Pacific visitor dates.
+Storage is the sum of reported per-database daily peaks, not bytes written that
+day or a live storage snapshot; absent storage samples remain unknown.
+The UI compares against Free-plan allowances (confirmed September 17, 2026):
+100,000 Worker requests, 5 million D1 row reads, 100,000 row writes per day;
+5 GB account storage and 500 MB per database. Update the reference allowances
+and labeling if the account upgrades. Cloudflare's metrics can lag and use
+adaptive sampling; these are operational estimates, not an invoice.
+Sources: [Workers limits](https://developers.cloudflare.com/workers/platform/limits/),
+[D1 pricing](https://developers.cloudflare.com/d1/platform/pricing/),
+[D1 limits](https://developers.cloudflare.com/d1/platform/limits/),
+[D1 metrics](https://developers.cloudflare.com/d1/observability/metrics-analytics/).
 
 Free Workers: 100,000 invocations/day; D1 free quotas also apply. An in-code
 analytics failure does not block content; public GET/HEAD requests also use

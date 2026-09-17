@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { readFile, readdir, access } from "node:fs/promises";
 import vm from "node:vm";
-import { pdfViewerResponse } from "../src/pdf-viewer.mjs";
+import { pdfViewerResponse, isPdfNavigation } from "../src/pdf-viewer.mjs";
 import template from "../src/pdf-viewer-template.mjs";
 
 const asset = name => new URL("../viewer-assets/" + name, import.meta.url);
@@ -18,12 +18,13 @@ async function settle() { for (let i = 0; i < 12; i++) await Promise.resolve(); 
 async function bootstrap({ tracking = true, privacy = {}, cookie = "", visible = true } = {}) {
   const script = await readFile(asset("web/acw-viewer.js"), "utf8");
   const document = new Target(), window = new Target(), bus = new Target();
-  const requests = [], starts = [], options = {}, timers = new Map(), errorMessage = { hidden: true };
+  const requests = [], starts = [], opens = [], options = {}, timers = new Map(), errorMessage = { hidden: true };
   let resolveStart, downloads = 0;
   Object.assign(document, { visibilityState: visible ? "visible" : "hidden", cookie,
     referrer: "https://ref.example/sensitive?email=hidden", querySelector: name => name === "#acwPdfError" ? errorMessage : ({ content: name.includes("acw-pdf-path") ? "/paper.pdf" : String(tracking) }) });
   bus.on = bus.addEventListener;
-  window.PDFViewerApplication = { initializedPromise: Promise.resolve(), eventBus: bus, pdfDocument: {}, toolbar: {}, secondaryToolbar: {} };
+  window.PDFViewerApplication = { initializedPromise: Promise.resolve(), eventBus: bus, pdfDocument: {}, toolbar: {}, secondaryToolbar: {},
+    open(args) { assert.equal(this, window.PDFViewerApplication); opens.push(args); return "opened"; } };
   window.PDFViewerApplicationOptions = { setAll: values => Object.assign(options, values) };
   window.acwStartEngagement = values => { starts.push(values); return { download: () => downloads++, stop() {} }; };
   vm.runInNewContext(script, { window, document, navigator: privacy, URL, AbortController,
@@ -34,11 +35,36 @@ async function bootstrap({ tracking = true, privacy = {}, cookie = "", visible =
   });
   document.emit("webviewerloaded");
   await settle();
-  return { document, window, bus, requests, starts, options, timers, errorMessage,
+  return { document, window, bus, requests, starts, opens, options, timers, errorMessage,
     get downloads() { return downloads; },
     async acknowledge(ok = true) { resolveStart({ ok }); await settle(); },
   };
 }
+
+test("HTML navigations work without Fetch Metadata while byte clients stay raw", () => {
+  const check = (headers, method = "GET") => isPdfNavigation(new Request("https://site.example/paper.pdf", { headers, method }));
+  for (const headers of [{}, { "Sec-Fetch-Dest": "document" }, { "Sec-Fetch-Mode": "navigate" }, { "Sec-Fetch-Dest": "iframe", "Sec-Fetch-Mode": "navigate" }]) {
+    assert.equal(check({ Accept: "application/pdf,text/html;q=0.8,*/*;q=0.5", ...headers }), true);
+  }
+  for (const headers of [{}, { Accept: "*/*" }, { Accept: "application/pdf" }, { Accept: "text/html;q=0,*/*" },
+    { Accept: "text/html;q=oops" }, { Accept: "text/html", Range: "bytes=0-" },
+    { Accept: "text/html", "Sec-Fetch-Dest": "empty" }, { Accept: "text/html", "Sec-Fetch-Dest": "embed" },
+    { Accept: "text/html", "Sec-Fetch-Mode": "cors" }]) assert.equal(check(headers), false, JSON.stringify(headers));
+  assert.equal(check({ Accept: "text/html" }, "HEAD"), false);
+});
+
+test("viewer marks only its own raw fetch and preserves PDF.js options and receiver", async () => {
+  const h = await bootstrap(), app = h.window.PDFViewerApplication;
+  const args = { url: "/paper.pdf?__pdf=raw", httpHeaders: { Existing: "kept" }, password: "test" };
+  assert.equal(app.open(args), "opened");
+  assert.equal(h.opens[0].httpHeaders["X-ACW-PDF-Viewer"], "1");
+  assert.equal(h.opens[0].httpHeaders.Existing, "kept");
+  assert.equal(h.opens[0].password, "test");
+  assert.equal(args.httpHeaders["X-ACW-PDF-Viewer"], undefined);
+  const other = { url: "/other.pdf" };
+  app.open(other);
+  assert.equal(h.opens[1], other);
+});
 
 test("renderer adapts real generic markup, same URL/raw loading, escaping, CSP and no GA", async () => {
   const response = pdfViewerResponse("/papers/a%22%3Cscript%3E.pdf", "G-UNUSED");

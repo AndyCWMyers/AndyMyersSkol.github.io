@@ -1,7 +1,7 @@
 # Worker integration
 
-No production Worker, Wrangler config, migrations, existing client, or SQL is
-modified by these modules.
+The production Worker integrates these modules with its known-document allowlist
+and private engagement reports.
 
 ## Routes and exports
 
@@ -9,6 +9,10 @@ modified by these modules.
   trackingEnabled = true): Response`. The Worker must allowlist canonical PDF
   paths and invoke it only for browser GET navigation. Invalid paths throw.
   `measurementId` is reserved and intentionally unused: no browser GA event.
+- `isPdfNavigation(request)` accepts GET requests explicitly accepting HTML,
+  including browsers without Fetch Metadata. Explicit non-navigation destinations
+  or modes, range requests, and HTML with quality zero are excluded. The Worker
+  separately preserves bots, unknown document paths and explicit raw URLs.
 - Serve the default string export of `src/engagement-client.mjs` at
   `/__analytics/engagement.js` with JavaScript content type. It installs
   `window.acwStartEngagement({id, path, kind})`, returning `{download(), stop()}`.
@@ -23,6 +27,9 @@ modified by these modules.
   the original known `.pdf` URL with `pdfViewerResponse`. The adapted HTML base is
   `/__pdfjs/web/`; PDF fetching uses `path + '?__pdf=raw'`. Location and hash remain
   the original document URL. The query `file` cannot replace the selected PDF.
+  The integration adds `X-ACW-PDF-Viewer: 1` only to this document's PDF.js
+  loading options. The Worker excludes marked raw byte fetches from view counts,
+  even without Fetch Metadata; the rendered acknowledgement owns the view event.
 - Raw PDF handling, HEAD/robots/non-browser behavior, cookies, known-path
   selection, and the Worker-side GA view remain the caller's responsibility.
 
@@ -34,6 +41,11 @@ referrer, source, medium, campaign}`. Referrer is an origin or empty string;
 campaigns use the existing sanitized UTM rules. A single ID survives retries,
 focus changes, and BFCache. The Worker creates the view row and engagement
 session with that same ID. No synthetic GA page view is emitted by the viewer.
+Private history reports distinguish `untracked` (no session), `no_updates`
+(session without accepted checkpoints), `outside_period` (checkpoints only outside
+the selected dates), and `tracked` (checkpoints in the selected dates). Time and
+download fields are omitted when no checkpoints exist in the selected dates;
+zero is reserved for a received zero-valued measurement.
 
 Engagement POSTs to `/__analytics/engagement` contain:
 

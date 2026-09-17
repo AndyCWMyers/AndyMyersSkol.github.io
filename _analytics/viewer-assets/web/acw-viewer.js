@@ -67,6 +67,12 @@
 
   function configure() {
     const app = window.PDFViewerApplication;
+    const open = app.open;
+    app.open = function (args) {
+      // Mark internal byte/range fetches even when Fetch Metadata is unavailable.
+      if (args.url === rawURL) args = { ...args, httpHeaders: { ...args.httpHeaders, "X-ACW-PDF-Viewer": "1" } };
+      return open.call(this, args);
+    };
     window.PDFViewerApplicationOptions.setAll({
       defaultUrl: rawURL, disablePreferences: true, annotationEditorMode: -1,
       annotationMode: 1, enableScripting: false, enableComment: false,

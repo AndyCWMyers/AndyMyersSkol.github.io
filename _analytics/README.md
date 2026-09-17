@@ -85,7 +85,10 @@ GA4 once through the existing server integration.
 
 Papers & CV and charts expose reading hours and downloads, with dashes for the
 homepage. Profiles separately show PDF reading time, homepage time and downloads,
-plus per-view measurements. Historical views show Not measured. A history item
+plus per-view measurements. PDF history labels distinguish tracked viewer sessions,
+sessions without reading updates, and requests with no tracked viewer session.
+Missing updates remain Not measured, including sessions created without a first
+checkpoint; only received zero-valued updates show zero. A history item
 opened before the selected period can appear as Continued for reading within it,
 without incrementing the period's view count. Users show short Most recent page
 labels; bot scores are no longer collected or displayed. Visible Users/profile
@@ -93,11 +96,15 @@ views refresh once per minute; hidden tabs do not poll.
 
 The real generic PDF.js release and licenses are in `viewer-assets/` and deployed
 through the private ASSETS binding, served at `/__pdfjs/`. The Worker allowlists
-known documents, serves its HTML at the original PDF URL for browser navigation,
-and serves original bytes at `?__pdf=raw`. HEAD, bots and non-browser clients retain
+known documents, serves its HTML at the original PDF URL for requests accepting
+HTML (even without Fetch Metadata), and serves original bytes at `?__pdf=raw`.
+Explicit non-navigation fetches, range requests, HEAD, bots and PDF-only clients retain
 native PDF responses. Search, thumbnails, zoom, navigation, print and download
 remain native PDF.js controls. Local-file opening, scripting and editing are
-disabled. See `PDF-VIEWER-CONTRACT.md` for the browser/Worker protocol.
+disabled. Internal PDF.js byte fetches carry `X-ACW-PDF-Viewer: 1` so older browsers
+without Fetch Metadata do not count the bytes and rendered view twice. This marker
+only suppresses redundant analytics, not access control. See
+`PDF-VIEWER-CONTRACT.md` for the browser/Worker protocol.
 
 ## Own Visits And Distinct Browsers
 

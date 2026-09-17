@@ -1,5 +1,19 @@
 import viewerHTML from "./pdf-viewer-template.mjs";
 
+export function isPdfNavigation(request) {
+  if (request.method !== "GET" || request.headers.has("Range")) return false;
+  const destination = request.headers.get("Sec-Fetch-Dest"), mode = request.headers.get("Sec-Fetch-Mode");
+  if (destination && !["document", "iframe"].includes(destination)) return false;
+  if (mode && mode !== "navigate") return false;
+  // Older browsers may omit Fetch Metadata. Explicit HTML acceptance is sufficient.
+  return (request.headers.get("Accept") || "").split(",").some(value => {
+    const [type, ...parameters] = value.trim().toLowerCase().split(";");
+    const quality = parameters.find(parameter => parameter.trim().startsWith("q="));
+    const q = quality ? Number(quality.trim().slice(2)) : 1;
+    return type.trim() === "text/html" && q > 0 && q <= 1;
+  });
+}
+
 function escapeAttribute(value) {
   return value.replace(/[&<>"']/g, char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]);
 }

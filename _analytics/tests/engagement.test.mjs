@@ -215,6 +215,22 @@ test("malformed, impossible and oversized cumulative snapshots are rejected", as
   assert.equal(db.prepare("SELECT milliseconds FROM reading_sessions").get().milliseconds, 0);
 });
 
+test("history distinguishes missing sessions, missing updates, out-of-period updates and measured zero", async () => {
+  const { DB, db } = database(), pending = await session(db, DB), tracked = await session(db, DB);
+  await saveReading(DB, snapshot(tracked, { milliseconds: 0, downloads: 0, hours: [{ hour: midnight - 3600, milliseconds: 0, downloads: 0 }] }), visitor, now);
+  const before = await historyReading(DB, dates("2026-09-16"), false, [pending, tracked]);
+  assert.deepEqual(before.rows.find(row => row.id === pending), { id: pending, readingStatus: "no_updates" });
+  assert.deepEqual(before.rows.find(row => row.id === tracked), { id: tracked, readingStatus: "tracked", readingSeconds: 0, downloads: 0 });
+  const after = await historyReading(DB, dates("2026-09-17"), false, [tracked]);
+  assert.deepEqual(after.rows[0], { id: tracked, readingStatus: "outside_period" });
+  const raw = crypto.randomUUID();
+  db.prepare("INSERT INTO events(id,occurred_at,kind,path,visitor_hash) VALUES(?,?,'pdf_request',?,?)").run(raw, midnight - 120, PDF, visitor);
+  const history = await report(DB, `view=users&user=${visitor.slice(0,24)}&start=2026-09-16&end=2026-09-16`);
+  assert.equal(history.rows.find(row => row.id === raw).readingStatus, "untracked");
+  assert.equal(history.rows.find(row => row.id === raw).readingSeconds, undefined);
+  assert.equal(history.rows.find(row => row.id === pending).downloads, undefined);
+});
+
 test("viewer navigation and byte fetch do not create events; rendered acknowledgement counts once", async () => {
   const { DB, db } = database(), ctx = context(), env = { DB, ORIGIN: { fetch: async () => new Response("%PDF-original", { headers: { "Content-Type": "application/pdf" } }) } };
   const navigation = new Request(ORIGIN + PDF, { headers: { "Sec-Fetch-Dest": "document", "Sec-Fetch-Mode": "navigate", Accept: "text/html", "User-Agent": "Chrome/140" } });
@@ -224,12 +240,33 @@ test("viewer navigation and byte fetch do not create events; rendered acknowledg
   assert.equal(db.prepare("SELECT COUNT(*) AS n FROM events").get().n, 0);
   const raw = await worker.fetch(new Request(`${ORIGIN}${PDF}?__pdf=raw`, { headers: { Cookie: cookie, "Sec-Fetch-Dest": "empty", "Sec-Fetch-Site": "same-origin" } }), env, ctx);
   assert.equal(await raw.text(), "%PDF-original");
+  const legacy = await worker.fetch(new Request(ORIGIN + PDF, { headers: { Accept: "text/html", Cookie: cookie, "User-Agent": "Safari/605" } }), env, ctx);
+  assert.match(legacy.headers.get("Content-Type"), /text\/html/);
+  const marked = await worker.fetch(new Request(`${ORIGIN}${PDF}?__pdf=raw`, { headers: { Cookie: cookie, "X-ACW-PDF-Viewer": "1" } }), env, ctx);
+  assert.equal(await marked.text(), "%PDF-original");
   const id = crypto.randomUUID(), body = JSON.stringify({ id, kind: "pdf_view", path: PDF, referrer: "" });
   for (let n = 0; n < 2; n++) assert.equal((await worker.fetch(new Request(`${ORIGIN}/__analytics/event`, { method: "POST", headers: { Origin: ORIGIN, Cookie: cookie }, body }), env, ctx)).status, 204);
   await ctx.finish();
   assert.equal(db.prepare("SELECT COUNT(*) AS n FROM events").get().n, 1);
   assert.equal(db.prepare("SELECT COUNT(*) AS n FROM reading_sessions").get().n, 1);
   assert.equal(db.prepare("SELECT visitor_hash FROM reading_sessions").get().visitor_hash, await visitorHash(cookie.split("=")[1]));
+});
+
+test("broader routing preserves raw downloads, bots, range requests and opt-outs", async () => {
+  const { DB, db } = database(), ctx = context(), env = { DB, ORIGIN: { fetch: async () => new Response("%PDF-original", { headers: { "Content-Type": "application/pdf" } }) } };
+  for (const privacy of [{ DNT: "1" }, { "Sec-GPC": "1" }, { Cookie: "__Host-acw_ignore=1" }]) {
+    const viewer = await worker.fetch(new Request(ORIGIN + PDF, { headers: { Accept: "text/html", ...privacy } }), env, ctx);
+    assert.match(await viewer.text(), /acw-tracking" content="false"/);
+    assert.equal(viewer.headers.get("Set-Cookie"), null);
+  }
+  for (const [path, headers, method] of [[PDF + "?__pdf=raw", {}, "GET"], [PDF, { "User-Agent": "Googlebot" }, "GET"],
+    [PDF, { Range: "bytes=100-" }, "GET"], [PDF, {}, "HEAD"], ["/unknown.pdf", {}, "GET"]]) {
+    const response = await worker.fetch(new Request(ORIGIN + path, { method, headers: { Accept: "text/html", ...headers } }), env, ctx);
+    assert.equal(await response.text(), "%PDF-original");
+  }
+  await ctx.finish();
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM reading_sessions").get().n, 0);
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM events WHERE path=? AND bot=0").get(PDF).n, 1);
 });
 
 test("engagement endpoint enforces origin, identity, privacy and rate limits", async () => {

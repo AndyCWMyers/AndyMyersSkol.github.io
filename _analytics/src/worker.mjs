@@ -10,7 +10,7 @@ import { QUERY_NAMES, REPORT_PLANS, queryUsage } from "./report-plan.mjs";
 import { headlineSummary } from "./summary.mjs";
 import { startReading, saveReading, readingItems, addReadingItems } from "./engagement.mjs";
 import engagementSource from "./engagement-client.mjs";
-import { pdfViewerResponse } from "./pdf-viewer.mjs";
+import { pdfViewerResponse, isPdfNavigation } from "./pdf-viewer.mjs";
 
 // Configuration and bounded, privacy-preserving normalization.
 const HOSTS = new Set(["www.andrewcwmyers.com", "andrewcwmyers.com"]);
@@ -341,17 +341,17 @@ export default {
     // Public GET/HEAD content can bypass a tracking-code exception. Private APIs cannot.
     if (request.method === "GET" || request.method === "HEAD") ctx.passThroughOnException?.();
     const pdfPath = /\.pdf$/i.test(url.pathname) && documents.some(document => document.name === url.pathname);
-    const browserNavigation = request.headers.get("Sec-Fetch-Dest") === "document"
-      && request.headers.get("Sec-Fetch-Mode") === "navigate" && (request.headers.get("Accept") || "").includes("text/html");
-    if (pdfPath && request.method === "GET" && browserNavigation && !url.searchParams.has("__pdf") && !metadata(request).bot) {
+    if (pdfPath && isPdfNavigation(request) && !url.searchParams.has("__pdf") && !metadata(request).bot) {
       const viewer = pdfViewerResponse(url.pathname, env.GA_MEASUREMENT_ID, !optedOut(request));
       if (!optedOut(request)) viewer.headers.append("Set-Cookie", visitorIdentity(request).cookie);
       return viewer;
     }
     const response = env.ORIGIN ? await env.ORIGIN.fetch(request) : await fetch(request);
     // PDF.js fetches bytes separately; its rendered view creates exactly one event.
-    if (pdfPath && url.searchParams.get("__pdf") === "raw" && request.headers.get("Sec-Fetch-Dest") === "empty"
-      && request.headers.get("Sec-Fetch-Site") === "same-origin") return response;
+    if (pdfPath && url.searchParams.get("__pdf") === "raw" && (
+      request.headers.get("X-ACW-PDF-Viewer") === "1" ||
+      (request.headers.get("Sec-Fetch-Dest") === "empty" && request.headers.get("Sec-Fetch-Site") === "same-origin")
+    )) return response;
     if (optedOut(request) || request.method !== "GET") return response;
     const type = response.headers.get("Content-Type") || "";
     if ((type.includes("application/pdf") || (response.status === 304 && /\.pdf$/i.test(url.pathname))) && initialPdfRequest(request, response)) {

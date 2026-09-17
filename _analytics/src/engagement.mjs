@@ -106,12 +106,15 @@ export async function historyReading(db, dates, excludePersonal, ids) {
   // D1 allows at most 100 bound parameters per statement.
   for (let offset = 0; offset < ids.length; offset += 90) {
     const batch = ids.slice(offset, offset + 90);
-    const response = await db.prepare(`SELECT s.id, COALESCE(SUM(h.milliseconds),0) / 1000.0 AS readingSeconds,
-    COALESCE(SUM(h.downloads),0) AS downloads FROM reading_sessions s
+    const response = await db.prepare(`SELECT s.id,
+    CASE WHEN COUNT(h.session_id) > 0 THEN 'tracked' WHEN s.seq < 0 THEN 'no_updates' ELSE 'outside_period' END AS readingStatus,
+    SUM(h.milliseconds) / 1000.0 AS readingSeconds, SUM(h.downloads) AS downloads FROM reading_sessions s
     LEFT JOIN reading_hours h ON h.session_id = s.id AND h.hour >= ? AND h.hour < ?
     WHERE s.id IN (${batch.map(() => "?").join(",")}) ${excludePersonal ? `AND NOT ${PERSONAL}` : ""} GROUP BY s.id`)
       .bind(dates.from, dates.until, ...batch).all();
-    rows.push(...response.results); measured.push(["historyReading", response]);
+    rows.push(...response.results.map(({ readingSeconds, downloads, ...row }) =>
+      readingSeconds === null ? row : { ...row, readingSeconds, downloads }));
+    measured.push(["historyReading", response]);
   }
   return { rows, measured };
 }

@@ -65,7 +65,10 @@ export async function userReport(db, url, dates, personal, excludePersonal, page
     const history = await historyReading(db, dates, excludePersonal, visible.map(row => row.id));
     measured.push(...history.measured);
     const byId = new Map(history.rows.map(row => [row.id, row]));
-    for (const row of visible) if (byId.has(row.id)) Object.assign(row, byId.get(row.id));
+    for (const row of visible) {
+      if (byId.has(row.id)) Object.assign(row, byId.get(row.id));
+      else if (["page_view", "pdf_request"].includes(row.kind)) row.readingStatus = "untracked";
+    }
   } else {
     const byUser = new Map(reading.rows.map(row => [row.id, row]));
     for (const row of visible) {

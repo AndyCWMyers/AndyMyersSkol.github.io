@@ -579,6 +579,35 @@ test("city migration leaves previous events unchanged and unlocated", () => {
   assert.equal(db.prepare("SELECT COUNT(*) AS n FROM events").get().n, 1);
 });
 
+test("city maps deduplicate across pages and honor scope, unknown identities, bots and retries", async () => {
+  const s = setup(), now = Math.floor(Date.now() / 1000), a = await visitorHash(A), b = await visitorHash(B);
+  const insert = s.db.prepare("INSERT INTO events(id,occurred_at,kind,path,visitor_hash,country,region,city,is_personal,bot,duplicate_of) VALUES(?,?,?,?,?,'US',?,?,?,?,?)");
+  for (const [id, kind, path, hash, region, city, personal, bot, duplicate] of [
+    ["1", "page_view", "/", a, "CA", "Stanford", 0, 0, ""],
+    ["2", "pdf_request", "/paper.pdf", a, "CA", "Stanford", 0, 0, ""],
+    ["3", "pdf_request", "/paper.pdf", b, "CA", "Stanford", 1, 0, ""],
+    ["4", "pdf_request", "/paper.pdf", "", "CA", "Stanford", 0, 0, ""],
+    ["5", "outbound_click", "/", b, "CA", "Stanford", 0, 0, ""],
+    ["6", "pdf_request", "/paper.pdf", b, "CA", "Stanford", 0, 1, ""],
+    ["7", "pdf_request", "/paper.pdf", a, "CA", "Stanford", 0, 0, "2"],
+    ["8", "page_view", "/", a, "IL", "Springfield", 0, 0, ""],
+    ["9", "page_view", "/", a, "MA", "Springfield", 0, 0, ""],
+    ["10", "page_view", "/", "", "CA", "", 0, 0, ""],
+  ]) insert.run(id, now, kind, path, hash, region, city, personal, bot, duplicate);
+  insert.run("old", now - 400 * 86400, "page_view", "/", a, "CA", "Stanford", 0, 0, "");
+  const get = async suffix => (await s.request(`/__analytics/report?view=cities${suffix}`, { Authorization: `Bearer ${SECRET}` })).json();
+  const report = await get("&excludePersonal=1");
+  assert.equal(report.queryUsage.queryCount, 1);
+  assert.equal(report.cityViews.filter(row => row.name === "Springfield").length, 2);
+  assert.equal(report.cityViews.find(row => row.name === "").unidentifiedRequests, 1);
+  assert.deepEqual(report.cityViews.find(row => row.name === "Stanford"), { name: "Stanford", country: "US", region: "CA", count: 3, visitors: 1, identifiedRequests: 2, unidentifiedRequests: 1 });
+  assert.equal((await get("&excludePersonal=0")).cityViews.find(row => row.name === "Stanford").visitors, 2);
+  const paper = await get("&excludePersonal=1&page=%2Fpaper.pdf");
+  assert.equal(paper.cityViews.length, 1);
+  assert.equal(paper.cityViews[0].count, 2);
+  assert.equal(paper.cityViews[0].visitors, 1);
+});
+
 test("IP profiles include every address across pages, never other users, bots, excluded or out-of-period events", async () => {
   const s = setup(), now = Math.floor(Date.now() / 1000), a = await visitorHash(A), b = await visitorHash(B);
   const insert = s.db.prepare("INSERT INTO events(id,occurred_at,kind,path,visitor_hash,ip_address,is_personal,bot) VALUES(?,?,'page_view','/',?,?,?,?)");

@@ -282,9 +282,9 @@ test("lazy report plans preserve full-report values while skipping unopened tabs
   };
   for (const excludePersonal of ["0", "1"]) {
     const full = await get("all", { excludePersonal });
-    assert.equal(calls.at(-1), 19);
+    assert.equal(calls.at(-1), 20);
     const plans = { summary: ["totals", "personalActivity"], overview: ["items"], papers: ["items"], outbound: ["items"],
-      geography: ["countries", "cities"], sources: ["referrers"], devices: ["devices"], states: ["states"], counties: ["counties", "countyViews"], countries: ["countryViews"] };
+      geography: ["countries", "cities"], sources: ["referrers"], devices: ["devices"], states: ["states"], counties: ["counties", "countyViews"], countries: ["countryViews"], cities: ["cityViews"] };
     for (const [view, fields] of Object.entries(plans)) {
       const part = await get(view, { excludePersonal });
       assert.equal(calls.at(-1), fields.length, view);

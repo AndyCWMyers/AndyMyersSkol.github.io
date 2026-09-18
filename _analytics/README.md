@@ -455,6 +455,14 @@ and bot classifications are coarse heuristics, not verified human identities.
 Geographic data is country/region and an estimated U.S. county (or county equivalent).
 Do not put personal data in attribution tags.
 
+### City Map Reports
+
+The separate `view=cities` map report returns `cityViews` with city, country,
+region, total page/PDF views, and distinct visitor counts. It uses one lazy query
+and the same date/page/personal/bot/duplicate filters as the other geographic maps.
+Unknown cities and unidentified requests remain explicit; users are deduplicated
+across documents inside each city, not summed from document totals.
+
 ### Expanded Inbound Attribution
 
 Migration `0017_inbound_details.sql` adds a nullable JSON field to each existing

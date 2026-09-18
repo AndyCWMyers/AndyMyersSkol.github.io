@@ -1,7 +1,7 @@
 // Named plans keep inactive tabs out of D1, while old clients/CSV retain all fields.
 export const QUERY_NAMES = ["totals", "daily", "pages", "outbound", "countries", "referrers", "devices", "campaigns",
   "pdfVisitors", "pdfVisitorsByPath", "items", "breakdowns", "personalActivity", "states", "counties", "countyViews",
-  "locationBreakdowns", "cities", "countryViews"];
+  "locationBreakdowns", "cities", "countryViews", "cityViews"];
 export const REPORT_PLANS = {
   all: QUERY_NAMES,
   summary: ["totals", "personalActivity"],
@@ -12,6 +12,7 @@ export const REPORT_PLANS = {
   states: ["states"],
   counties: ["counties", "countyViews"],
   countries: ["countryViews"],
+  cities: ["cityViews"],
   sources: ["referrers"],
   devices: ["devices"],
   detail: ["items", "breakdowns", "locationBreakdowns"],

@@ -68,11 +68,11 @@ test("PDF records only visible pages, scrolls without extra requests and respect
   }) }));
   const pdf = { container, nodes };
   const h = browser({ pdf, start: Date.UTC(2026, 8, 17, 7) });
-  assert.deepEqual(latest(h).hours[0].pdfAttention, { total: 40, scrolled: 0, pages: [1, 0] });
+  assert.deepEqual(latest(h).hours[0].pdfAttention, { total: 40, scrolled: 0, pages: [1, 0], seconds: Array(40).fill(0) });
   container.scrollTop = 31 * 800; container.emit("scroll");
   assert.equal(h.requests.length, 1);
   for (let i = 0; i < 15; i++) await h.tick();
-  assert.deepEqual(latest(h).hours[0].pdfAttention, { total: 40, scrolled: 1, pages: [2147483649, 0] });
+  assert.deepEqual(latest(h).hours[0].pdfAttention, { total: 40, scrolled: 1, pages: [2147483649, 0], seconds: Array.from({ length: 40 }, (_, i) => i === 31 ? 15 : 0) });
   await h.visible(false);
   container.scrollTop = 39 * 800; container.emit("scroll");
   for (let i = 0; i < 15; i++) await h.tick();
@@ -92,6 +92,31 @@ test("PDF records only visible pages, scrolls without extra requests and respect
   await rotating.tick(3600000); rotating.handle.download(); await settle();
   assert.equal(rotating.requests.filter(r => r.url.endsWith("/event")).length, 1);
   assert.notEqual(latest(rotating).id, "view-1");
+});
+
+test("PDF page time splits overlaps, preserves hourly boundaries, and pauses hidden or unfocused", async () => {
+  const container = new Target();
+  Object.assign(container, { scrollTop: 0, scrollLeft: 0, getBoundingClientRect: () => ({ top: 0, bottom: 800, left: 0, right: 600, height: 800 }) });
+  const nodes = Array.from({ length: 3 }, (_, i) => ({ dataset: { pageNumber: String(i + 1) }, getBoundingClientRect: () => ({
+    top: i * 400 - container.scrollTop, bottom: (i + 1) * 400 - container.scrollTop, left: 0, right: 600, height: 400,
+  }) }));
+  const h = browser({ pdf: { container, nodes }, start: Date.UTC(2026, 8, 17, 6, 59, 58) });
+  for (let i = 0; i < 4; i++) await h.tick();
+  await h.focus(false);
+  assert.deepEqual(latest(h).hours.map(row => row.pdfAttention.seconds), [[1, 1, 0], [1, 1, 0]]);
+  const paused = latest(h);
+  for (let i = 0; i < 20; i++) await h.tick();
+  assert.deepEqual(latest(h), paused);
+  await h.focus(true);
+  container.scrollTop = 800; container.emit("scroll");
+  const requests = h.requests.length;
+  for (let i = 0; i < 6; i++) await h.tick();
+  assert.equal(h.requests.length, requests);
+  await h.visible(false);
+  assert.deepEqual(latest(h).hours[1].pdfAttention.seconds, [1, 1, 6]);
+  for (let i = 0; i < 15; i++) await h.tick();
+  assert.equal(latest(h).milliseconds, 10000);
+  assert.equal(latest(h).hours.flatMap(row => row.pdfAttention.seconds).reduce((a, b) => a + b, 0), 10);
 });
 
 function checkTotals(body) {

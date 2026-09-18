@@ -126,9 +126,26 @@ PDF activity dropdown. Old/native requests remain Not measured. No extra queries
 per-page rows, timers or requests are added; changed JSON uses the existing hour
 write. Host and privacy exclusions remain unchanged, and no activity goes to GA.
 Bitset validation and atomic monotonic guards prevent erasure and invalid pages.
-PDF attention supports up to 10,000 pages and rotates after 16 observed UTC-hour
-buckets using the existing continuation flow, keeping even worst-case bodies
-below 64,512 bytes. Larger documents keep ordinary timing without page detail.
+New snapshots also include a dense `seconds` array (one counter per PDF page).
+The same one-second sample divides credited active time equally among qualifying
+visible pages. Subsecond counters accumulate in browser memory; submitted values
+are floored to whole seconds per page/hour. Scrolling itself adds no time.
+The existing hourly JSON and private history query store and sum these counters;
+there are no additional requests, rows or queries for page time. Validation bounds
+the sum by recorded active time; monotonic guards prevent retries, stale updates
+or older clients from erasing already stored page time.
+
+The PDF activity dropdown shows each timed page, time in view and share of measured
+page time in the selected period. Shares do not use total elapsed time as their
+denominator, and independently rounded percentages may not sum to exactly 100%.
+Old snapshots without counters show Not measured; a received all-zero array stays
+distinct from missing data. Mixed old/new hourly snapshots are labeled partial.
+This measures page exposure, not attention or proof of reading.
+
+PDF attention supports up to 10,000 pages and rotates after at most 16 observed
+UTC-hour buckets using the existing continuation flow. Very long documents have
+a smaller bucket cap based on their page count (one hour for 10,000 pages), keeping
+even worst-case bodies below 64,512 bytes. Larger documents keep ordinary timing without page detail.
 Unsent changes can still be lost on abrupt exits. Nothing is backfilled.
 
 Downloads count PDF.js toolbar/keyboard download requests, not verified saved

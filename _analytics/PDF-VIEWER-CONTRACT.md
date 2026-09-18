@@ -93,7 +93,17 @@ of word zero denotes page 1. Unused final bits must be zero; set bits may never
 be cleared. `pdf-attention.mjs` validates and unions these snapshots. Missing
 metadata remains unknown, never an empty measured set. Page visibility is sampled
 inside the PDF viewer while focused; pre-rendering does not count as a view.
-These sessions rotate at their 17th distinct UTC-hour bucket to bound payloads.
+Optional `seconds` contains exactly `total` nonnegative integer counters, in PDF
+page order, each at most 3600 and summing to at most the hour's active milliseconds
+divided by 1000. Positive counters require that page's viewed bit. The browser
+splits sampled active time equally between qualifying visible pages, accumulating
+fractions in memory and flooring at whole seconds per page/hour for transport.
+Counters cannot decrease or disappear once recorded. Old snapshots remain valid
+without this field and do not imply zero page time.
+
+The PDF bucket cap is `min(16,max(1,floor(63000/(5*total+11*ceil(total/32)+200))))`.
+Rotation begins when another bucket is needed. This bounds dense page counters
+and bitsets below the 64,512-byte body limit even for 10,000-page documents.
 
 At a 129th distinct UTC hour, the helper sends the complete old session with
 `active:false`, then starts a new view with a fresh ID (`engagement:true`) and

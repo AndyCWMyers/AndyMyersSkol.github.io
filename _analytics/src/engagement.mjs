@@ -27,7 +27,7 @@ export function validReading(body, now = Date.now()) {
       || row.hour > Math.floor((now + 60000) / 3600000) * 3600
       || !Number.isSafeInteger(row.milliseconds) || row.milliseconds < 0 || row.milliseconds > 3600000
       || !Number.isSafeInteger(row.downloads) || row.downloads < 0 || row.downloads > 10000
-      || !validAttention(row.attention, row.milliseconds) || !validPdfAttention(row.pdfAttention)
+      || !validAttention(row.attention, row.milliseconds) || !validPdfAttention(row.pdfAttention, row.milliseconds)
       || (row.attention !== undefined && row.pdfAttention !== undefined)) return false;
     seen.add(row.hour); milliseconds += row.milliseconds; downloads += row.downloads;
   }

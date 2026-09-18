@@ -86,6 +86,49 @@ test("PDF attention is private, date-scoped, cumulative, idempotent and reuses e
   assert.equal(db.prepare("SELECT COUNT(*) AS n FROM reading_hours WHERE session_id=?").get(host).n, 0);
 });
 
+test("PDF page time is date-scoped, cumulative and shares the existing hourly writes", async () => {
+  const { db, DB } = database(), id = await session(db, DB);
+  const body = snapshot(id);
+  body.hours[0].pdfAttention = { total: 3, scrolled: 1, pages: [3], seconds: [30, 90, 0] };
+  body.hours[1].pdfAttention = { total: 3, scrolled: 1, pages: [6], seconds: [0, 120, 60] };
+  assert.equal(await saveReading(DB, body, visitor, now), 204);
+  const before = await historyReading(DB, dates("2026-09-16"), true, [id]);
+  assert.deepEqual(before.rows[0].pdfAttention.pageTimes, [{ page: 1, visibleSeconds: 30, share: 0.25 }, { page: 2, visibleSeconds: 90, share: 0.75 }]);
+  const after = await historyReading(DB, dates("2026-09-17"), true, [id]);
+  assert.equal(after.rows[0].pdfAttention.measuredSeconds, 180);
+  assert.deepEqual(after.rows[0].pdfAttention.pageTimes.map(p => p.page), [2, 3]);
+  assert.equal(after.rows[0].pdfAttention.pageTimes.reduce((s, p) => s + p.share, 0), 1);
+  const stored = db.prepare("SELECT * FROM reading_hours ORDER BY hour").all();
+  for (const seconds of [undefined, [0, 0, 0], [0, 100, 60]]) {
+    const changed = { ...body.hours[1].pdfAttention, seconds };
+    if (seconds === undefined) delete changed.seconds;
+    await saveReading(DB, { ...body, seq: 2, hours: [body.hours[0], { ...body.hours[1], pdfAttention: changed }] }, visitor, now);
+    assert.equal(db.prepare("SELECT seq FROM reading_sessions WHERE id=?").get(id).seq, 1);
+    assert.deepEqual(db.prepare("SELECT * FROM reading_hours ORDER BY hour").all(), stored);
+  }
+  const changes = db.prepare("SELECT total_changes() AS n").get().n;
+  const update = { ...body, seq: 2, milliseconds: 301000, hours: [body.hours[0], { ...body.hours[1], milliseconds: 181000, pdfAttention: { ...body.hours[1].pdfAttention, seconds: [0, 121, 60] } }] };
+  await saveReading(DB, update, visitor, now);
+  assert.equal(db.prepare("SELECT total_changes() AS n").get().n - changes, 2);
+  await saveReading(DB, update, visitor, now);
+  assert.equal(db.prepare("SELECT total_changes() AS n").get().n - changes, 2);
+  const old = { total: 3, scrolled: 0, pages: [1] };
+  assert.equal(summarizePdfAttention([old]).pageTimes, undefined);
+  assert.equal(summarizePdfAttention([old, body.hours[0].pdfAttention]).timingPartial, true);
+  assert.deepEqual(summarizePdfAttention([{ ...old, seconds: [0, 0, 0] }]).pageTimes, []);
+  for (const seconds of [[1, 1], [-1, 0, 0], [0.5, 0, 0], [3601, 0, 0], [0, 1, 0], [2, 0, 0]]) assert.equal(validPdfAttention({ ...old, seconds }, 1000), false);
+});
+
+test("timed PDF payloads remain below the keepalive bound for every supported page count", () => {
+  for (const total of [1, 4, 50, 200, 700, 1000, 5000, 10000]) {
+    const maxHours = Math.min(16, Math.max(1, Math.floor(63000 / (total * 5 + Math.ceil(total / 32) * 11 + 200))));
+    // Deliberately use the widest possible counters, even though their sum exceeds an hour.
+    const value = { total, scrolled: 1, pages: Array(Math.ceil(total / 32)).fill(4294967295), seconds: Array(total).fill(3600) };
+    const full = snapshot(crypto.randomUUID(), { hours: Array.from({ length: maxHours }, (_, i) => ({ hour: midnight - i * 3600, milliseconds: 3600000, downloads: 10000, pdfAttention: value })) });
+    assert(Buffer.byteLength(JSON.stringify(full)) < 64512, `${total} pages / ${maxHours} hours`);
+  }
+});
+
 test("PDF bitsets are bounded, validate unsigned words and preserve distinct pages across hours", () => {
   const value = { total: 10000, scrolled: 1, pages: Array(313).fill(4294967295) };
   value.pages[312] = 65535;

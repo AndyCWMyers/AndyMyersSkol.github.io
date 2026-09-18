@@ -1,6 +1,7 @@
 // Served verbatim as /__analytics/engagement.js; no bundler/runtime dependencies.
 import homepageAttentionSource from "./homepage-attention-client.mjs";
 import pdfAttentionSource from "./pdf-attention-client.mjs";
+import recaptchaSource from "./recaptcha-client.mjs";
 export default String.raw`(() => {
   "use strict";
   const HOUR = 3600000;
@@ -13,6 +14,7 @@ export default String.raw`(() => {
 
   ${homepageAttentionSource}
   ${pdfAttentionSource}
+  ${recaptchaSource}
 
   function allowed() {
     return !navigator.globalPrivacyControl && navigator.doNotTrack !== "1" &&
@@ -37,6 +39,7 @@ export default String.raw`(() => {
 
   function startEngagement({ id, path, kind }) {
     if (!allowed() || !id || !path || !kind) return noop;
+    void assessVisit(id, kind).catch(() => {});
     let milliseconds = 0, downloads = 0, seq = 0, nextCheckpoint = EARLY_CHECKPOINT;
     let lastMono = performance.now(), lastWall = Date.now();
     let focused = document.hasFocus(), inPage = true, stopped = false, cancelled = false;

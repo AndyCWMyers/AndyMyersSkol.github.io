@@ -152,8 +152,46 @@ Missing updates remain Not measured, including sessions created without a first
 checkpoint; only received zero-valued updates show zero. A history item
 opened before the selected period can appear as Continued for reading within it,
 without incrementing the period's view count. Users show short Most recent page
-labels; bot scores are no longer collected or displayed. Visible Users/profile
+labels. Retired Cloudflare bot scores are not collected. Visible Users/profile
 views refresh once per minute; hidden tabs do not poll.
+
+### Google Visit Scores
+
+Migration `0016_recaptcha_scores.sql` adds nullable Google reCAPTCHA v3 scores,
+assessment times and a one-assessment status to existing reading sessions. These
+are separate from the retired Cloudflare `bot_score` field: **0 is more likely
+automated, 1 more likely legitimate**. Scores are probabilistic, not proof of a
+person or bot. Cloudflare remains authoritative for all visits and metadata;
+scores never block content, challenge visitors or change aggregate counts.
+
+After the homepage or PDF.js collector confirms a visit, the browser requests
+one score-only token with action `homepage_view` or `pdf_view`. Reading checkpoints
+do not request more scores. The standard Google badge stays visible. Host browsers,
+DNT/GPC and opted-out browsers do not load the script or submit assessments.
+Native/raw PDFs, blocked scripts, failures and old visits remain Unassessed.
+
+The public site key is domain-restricted to `andrewcwmyers.com` and its subdomains
+in the no-billing Andy Website Analytics Google project. `RECAPTCHA_SECRET` is an
+encrypted Worker secret, never included in Git or browser code. The server binds
+the visit ID to the existing HttpOnly browser identity, atomically claims one
+assessment, verifies hostname/action/token age and rejects every Google error,
+including quota responses with a placeholder 0.9. Tokens are not stored. The
+server sends only the token and secret, not raw IPs or internal visitor IDs;
+Google's browser script independently receives normal browser/network signals.
+
+Each attempted assessment adds one Worker call (apart from bounded transport
+retries), one Google verification and two logical D1 row updates. No per-heartbeat
+assessment or extra event row is added. Scores reuse existing authenticated user
+and history queries. The list/profile reports the most recent valid assessment
+within the selected dates; each history entry retains its own score. Missing later
+assessments do not erase earlier valid scores. No backfill or automatic deletion.
+
+Google's setup currently includes 10,000 assessments/month at no cost; billing
+was not enabled. Exhaustion/failure leaves scores unavailable without affecting
+website access. Review quota and privacy disclosures before expanding collection.
+See [v3](https://developers.google.com/recaptcha/docs/v3),
+[verification](https://developers.google.com/recaptcha/docs/verify), and
+[quota and CSP guidance](https://developers.google.com/recaptcha/docs/faq).
 
 The real generic PDF.js release and licenses are in `viewer-assets/` and deployed
 through the private ASSETS binding, served at `/__pdfjs/`. The Worker allowlists

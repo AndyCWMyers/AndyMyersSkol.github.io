@@ -95,11 +95,16 @@ export function addReadingItems(items, rows) {
 
 export async function userReading(db, dates, excludePersonal, labels) {
   if (!labels.length) return { rows: [], measured: null };
-  const response = await db.prepare(`WITH sessions AS (
-      SELECT s.*, ROW_NUMBER() OVER (PARTITION BY s.visitor_hash ORDER BY s.last_seen DESC, s.id) AS recent
+  const response = await db.prepare(`WITH eligible AS (
+      SELECT s.*, CASE WHEN s.recaptcha_at >= ? AND s.recaptcha_at < ? THEN s.recaptcha_at END AS period_bot_at
       FROM reading_sessions s WHERE substr(s.visitor_hash,1,24) IN (${labels.map(() => "?").join(",")})
         AND s.started_at < ? ${excludePersonal ? `AND NOT ${PERSONAL}` : ""}
+    ), sessions AS (
+      SELECT eligible.*, ROW_NUMBER() OVER (PARTITION BY visitor_hash ORDER BY last_seen DESC, id) AS recent,
+        ROW_NUMBER() OVER (PARTITION BY visitor_hash ORDER BY period_bot_at DESC, id) AS risk_recent FROM eligible
     ) SELECT substr(s.visitor_hash,1,24) AS id,
+      MAX(CASE WHEN s.risk_recent = 1 AND s.period_bot_at IS NOT NULL THEN s.recaptcha_score END) AS latestBotScore,
+      MAX(CASE WHEN s.risk_recent = 1 THEN s.period_bot_at END) AS latestBotScoreAt,
       SUM(CASE WHEN s.kind = 'pdf_request' THEN COALESCE(h.milliseconds,0) ELSE 0 END) / 1000.0 AS readingSeconds,
       SUM(CASE WHEN s.kind = 'page_view' THEN COALESCE(h.milliseconds,0) ELSE 0 END) / 1000.0 AS homepageSeconds,
       SUM(COALESCE(h.downloads,0)) AS downloads, COUNT(DISTINCT CASE WHEN h.session_id IS NOT NULL THEN s.id END) AS measuredViews,
@@ -111,7 +116,7 @@ export async function userReading(db, dates, excludePersonal, labels) {
       MAX(CASE WHEN s.recent = 1 THEN s.path END) AS lastReadingPath
     FROM sessions s LEFT JOIN reading_hours h ON h.session_id = s.id AND h.hour >= ? AND h.hour < ?
     GROUP BY substr(s.visitor_hash,1,24)`)
-    .bind(...labels, dates.until, dates.from, dates.from, dates.until, dates.from, dates.until).all();
+    .bind(dates.from, dates.until, ...labels, dates.until, dates.from, dates.from, dates.until, dates.from, dates.until).all();
   return { rows: response.results, measured: ["userReading", response] };
 }
 
@@ -121,6 +126,7 @@ export async function historyReading(db, dates, excludePersonal, ids) {
   for (let offset = 0; offset < ids.length; offset += 90) {
     const batch = ids.slice(offset, offset + 90);
     const response = await db.prepare(`SELECT s.id,
+    s.recaptcha_score AS botScore, s.recaptcha_at AS botScoreAt,
     CASE WHEN COUNT(h.session_id) > 0 THEN 'tracked' WHEN s.seq < 0 THEN 'no_updates' ELSE 'outside_period' END AS readingStatus,
     SUM(h.milliseconds) / 1000.0 AS readingSeconds, SUM(h.downloads) AS downloads,
     json_group_array(json(h.attention)) AS attentionHours, json_group_array(json(h.pdf_attention)) AS pdfAttentionHours FROM reading_sessions s

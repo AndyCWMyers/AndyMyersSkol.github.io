@@ -12,6 +12,7 @@ import { startReading, saveReading, readingItems, addReadingItems } from "./enga
 import engagementSource from "./engagement-client.mjs";
 import { pdfViewerResponse, pdfNavigationReason } from "./pdf-viewer.mjs";
 import { readUsage } from "./usage.mjs";
+import { assessVisit } from "./recaptcha.mjs";
 import { recordPdfDiagnostic, validDiagnosticSignal, updatePdfDiagnostic, pdfDiagnostics } from "./pdf-diagnostics.mjs";
 
 // Configuration and bounded, privacy-preserving normalization.
@@ -199,6 +200,18 @@ async function engagement(request, env) {
   return status === 204 ? new Response(null, { status, headers: JSON_HEADERS }) : json({ error: "Invalid reading update" }, status);
 }
 
+async function assessment(request, env) {
+  if (request.method !== "POST") return json({ error: "Method not allowed" }, 405);
+  if (request.headers.get("Origin") !== new URL(request.url).origin) return json({ error: "Forbidden" }, 403);
+  if (optedOut(request) || personalBrowser(request) || metadata(request).bot) return new Response(null, { status: 204, headers: JSON_HEADERS });
+  if (!env.DB || !env.RECAPTCHA_SECRET || !env.RECAPTCHA_SITE_KEY) return json({ error: "Assessment unavailable" }, 503);
+  if (env.COLLECT_LIMIT && !(await env.COLLECT_LIMIT.limit({ key: `assessment:${request.headers.get("CF-Connecting-IP") || "unknown"}` })).success) return json({ error: "Rate limited" }, 429);
+  let body;
+  try { body = await boundedJson(request, 13000); } catch { return json({ error: "Invalid assessment" }, 400); }
+  const status = await assessVisit(env, body, await visitorHash(visitorIdentity(request).value), new URL(request.url).hostname);
+  return new Response(null, { status, headers: JSON_HEADERS });
+}
+
 export function reportDates(url) {
   const end = url.searchParams.get("end") || pacificDate();
   const start = url.searchParams.get("start") || new Date(Date.parse(pacificDate()) - 29 * 86400000).toISOString().slice(0, 10);
@@ -363,8 +376,9 @@ export default {
     });
     if (url.pathname === "/__analytics/event") return collect(request, env, ctx).catch(() => json({ error: "Analytics unavailable" }, 503));
     if (url.pathname === "/__analytics/engagement") return engagement(request, env).catch(() => json({ error: "Analytics unavailable" }, 503));
+    if (url.pathname === "/__analytics/assessment") return assessment(request, env).catch(() => json({ error: "Assessment unavailable" }, 503));
     if (url.pathname === "/__analytics/pdf-diagnostic") return diagnosticSignal(request, env).catch(() => json({ error: "Diagnostics unavailable" }, 503));
-    if (url.pathname === "/__analytics/engagement.js") return new Response(engagementSource, { headers: {
+    if (url.pathname === "/__analytics/engagement.js") return new Response(engagementSource + `\nwindow.acwRecaptchaSiteKey=${JSON.stringify(env.RECAPTCHA_SITE_KEY || "")};`, { headers: {
       "Content-Type": "application/javascript", "Cache-Control": "public, max-age=300", "X-Content-Type-Options": "nosniff" } });
     if (url.pathname === "/__analytics/client.js") return new Response(`(${clientSource})(${JSON.stringify(env.GA_MEASUREMENT_ID || "")});`, { headers: {
       "Content-Type": "application/javascript", "Cache-Control": "public, max-age=300", "X-Content-Type-Options": "nosniff" } });

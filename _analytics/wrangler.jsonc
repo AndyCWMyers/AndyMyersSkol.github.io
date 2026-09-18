@@ -13,7 +13,7 @@
     "database_name": "andrew-myers-website-analytics",
     "database_id": "f99f190d-6f62-4810-9019-66d41ac6056f"
   }],
-  "vars": { "GA_MEASUREMENT_ID": "G-82ZD3DWY3B", "CF_ACCOUNT_ID": "c946b83f25bf9b04260b7996c77cfa83", "CF_DATABASE_ID": "f99f190d-6f62-4810-9019-66d41ac6056f" },
+  "vars": { "GA_MEASUREMENT_ID": "G-82ZD3DWY3B", "CF_ACCOUNT_ID": "c946b83f25bf9b04260b7996c77cfa83", "CF_DATABASE_ID": "f99f190d-6f62-4810-9019-66d41ac6056f", "RECAPTCHA_SITE_KEY": "6LcRmsItAAAAAFPXIZ194HsL-fP_gHLYp1Vo6__c" },
   "routes": [
     { "pattern": "www.andrewcwmyers.com/*", "zone_name": "andrewcwmyers.com" },
     { "pattern": "andrewcwmyers.com/*", "zone_name": "andrewcwmyers.com" }

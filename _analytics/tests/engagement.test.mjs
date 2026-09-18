@@ -437,10 +437,10 @@ test("history distinguishes missing sessions, missing updates, out-of-period upd
   const { DB, db } = database(), pending = await session(db, DB), tracked = await session(db, DB);
   await saveReading(DB, snapshot(tracked, { milliseconds: 0, downloads: 0, hours: [{ hour: midnight - 3600, milliseconds: 0, downloads: 0 }] }), visitor, now);
   const before = await historyReading(DB, dates("2026-09-16"), false, [pending, tracked]);
-  assert.deepEqual(before.rows.find(row => row.id === pending), { id: pending, readingStatus: "no_updates" });
-  assert.deepEqual(before.rows.find(row => row.id === tracked), { id: tracked, readingStatus: "tracked", readingSeconds: 0, downloads: 0 });
+  assert.deepEqual(before.rows.find(row => row.id === pending), { id: pending, botScore: null, botScoreAt: null, readingStatus: "no_updates" });
+  assert.deepEqual(before.rows.find(row => row.id === tracked), { id: tracked, botScore: null, botScoreAt: null, readingStatus: "tracked", readingSeconds: 0, downloads: 0 });
   const after = await historyReading(DB, dates("2026-09-17"), false, [tracked]);
-  assert.deepEqual(after.rows[0], { id: tracked, readingStatus: "outside_period" });
+  assert.deepEqual(after.rows[0], { id: tracked, botScore: null, botScoreAt: null, readingStatus: "outside_period" });
   const raw = crypto.randomUUID();
   db.prepare("INSERT INTO events(id,occurred_at,kind,path,visitor_hash) VALUES(?,?,'pdf_request',?,?)").run(raw, midnight - 120, PDF, visitor);
   const history = await report(DB, `view=users&user=${visitor.slice(0,24)}&start=2026-09-16&end=2026-09-16`);

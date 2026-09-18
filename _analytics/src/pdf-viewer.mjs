@@ -56,13 +56,14 @@ export function pdfViewerResponse(path, measurementId, trackingEnabled = true, d
     .replace('<body tabindex="0">', `<body tabindex="0">
     <noscript><p class="acwPdfFallback">${rawLink}</p></noscript>
     <p id="acwPdfError" class="acwPdfFallback" role="alert" hidden>PDF preview unavailable. ${rawLink}</p>`)
-    .replace("connect-src * blob: data:; base-uri 'none';", "connect-src 'self' blob: data:; base-uri 'self';")
+    .replace("script-src 'self' 'wasm-unsafe-eval';", "script-src 'self' 'wasm-unsafe-eval' https://www.google.com/recaptcha/ https://www.gstatic.com/recaptcha/;")
+    .replace("connect-src * blob: data:; base-uri 'none';", "connect-src 'self' blob: data: https://www.google.com/recaptcha/; frame-src https://www.google.com/recaptcha/ https://recaptcha.google.com/recaptcha/; base-uri 'self';")
     .replace('<link rel="stylesheet" href="viewer.css" />', '<link rel="stylesheet" href="viewer.css" />\n<link rel="stylesheet" href="acw-viewer.css" />');
   return new Response(html, { headers: {
     "Content-Type": "text/html; charset=utf-8",
     "Cache-Control": "private, no-store",
     "X-Content-Type-Options": "nosniff",
     "Referrer-Policy": "strict-origin-when-cross-origin",
-    "Content-Security-Policy": "default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; media-src blob:; font-src 'self' data:; connect-src 'self' blob: data:; base-uri 'self'; form-action 'none'; frame-ancestors 'self'",
+    "Content-Security-Policy": "default-src 'none'; script-src 'self' 'wasm-unsafe-eval' https://www.google.com/recaptcha/ https://www.gstatic.com/recaptcha/; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; media-src blob:; font-src 'self' data:; connect-src 'self' blob: data: https://www.google.com/recaptcha/; frame-src https://www.google.com/recaptcha/ https://recaptcha.google.com/recaptcha/; base-uri 'self'; form-action 'none'; frame-ancestors 'self'",
   } });
 }

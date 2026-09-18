@@ -440,8 +440,8 @@ on demand through the host and are not saved in the browser's offline report cac
 Inbound sources distinguish **Direct** (a captured request with no referrer supplied)
 from **Unknown** (missing/invalid capture, including older browser events). Direct
 does not prove someone typed a URL: privacy policies and apps may strip referrers.
-Browser events send only the landing referrer's origin, rather than incorrectly
-using the collector endpoint's same-site Referer header. Only the domain is stored.
+Browser events use `document.referrer`, not the collector endpoint's same-site
+Referer header. The Inbound aggregate remains grouped by domain.
 Migration `0002_referrer_status.sql` preserves all historic counts without guessing
 the sources of unclassified events. Detail tables show at most 50 groups per dimension.
 Migration `0003_personal_activity.sql` adds personal-event classification and a
@@ -452,9 +452,33 @@ and shown in authenticated individual user profiles. No browser fingerprints are
 created, and IP addresses do not determine visitor identity or personal filters.
 DNT/GPC opt-outs are honored by this collector. Browser
 and bot classifications are coarse heuristics, not verified human identities.
-Referrers are domains only; geographic data is country/region and an estimated U.S.
-county (or county equivalent). Only UTM marketing
-tags are retained from incoming query strings. Do not put personal data in UTMs.
+Geographic data is country/region and an estimated U.S. county (or county equivalent).
+Do not put personal data in attribution tags.
+
+### Expanded Inbound Attribution
+
+Migration `0017_inbound_details.sql` adds a nullable JSON field to each existing
+event row. New events retain sanitized referring and landing URLs and identify
+whether these came from the browser or a direct request. Private individual
+histories expose a collapsed Inbound source section; old rows remain unchanged.
+This adds bytes, not extra event rows, indexes, queries, or network requests.
+
+`src/inbound.mjs` normalizes URLs both before browser transmission and on the
+server. It keeps paths, `utm_*` parameters (including term/content/id and custom
+marketing tags), common Google/Microsoft/Meta/TikTok/X/LinkedIn/Yandex/affiliate
+click identifiers, and supplied `q`, `query`, `search`, `search_query`, `keyword`,
+`keywords`, or `p` parameters. Query values are limited to 300 characters, at most
+24 per URL, and each URL to 1,200 characters. Credentials, fragments, arbitrary
+unrecognized query parameters, obvious emails/auth tokens, and sensitive keys or
+authentication paths are discarded. Sanitization is not a guarantee that a
+publisher has not placed personal information in an otherwise valid tag or path.
+
+Browser referrer policies often provide only the origin or nothing. Missing
+Google organic search terms cannot be recovered, and recorded URLs/parameters
+are client-supplied attribution, not verified identities or proof of a search.
+The additional fields remain in private D1/user histories, not GA forwarding.
+Privacy opt-outs and personal-activity filtering remain unchanged. Session
+rotation preserves the current document's source and campaign information.
 
 ### Estimated Counties
 

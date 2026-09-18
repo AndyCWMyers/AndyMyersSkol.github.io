@@ -3,6 +3,7 @@
 import { queryUsage } from "./report-plan.mjs";
 import { userReading, historyReading } from "./engagement.mjs";
 import { pdfDiagnostics } from "./pdf-diagnostics.mjs";
+import { parseInbound } from "./inbound.mjs";
 
 function liveActivityQuery(excludePersonal, page) {
   // Both branches use time indexes; fallback activity never creates heartbeat writes.
@@ -60,7 +61,7 @@ export async function userReport(db, url, dates, personal, excludePersonal, page
       CASE WHEN path IN ('/index.html', '/index') THEN '/' ELSE path END AS path,
       target, country, region, city, county, county_fips, ip_address, browser, device, os,
       CASE WHEN referrer_status = 'known' THEN referrer WHEN referrer_status = 'direct' THEN '__direct__' ELSE '__unknown__' END AS referrer,
-      source, medium, campaign, ${personal} AS personal
+      source, medium, campaign, inbound_details, ${personal} AS personal
       ${base} AND substr(visitor_hash, 1, 24) = ? ORDER BY occurred_at DESC, rowid DESC LIMIT ? OFFSET ?`)
       .bind(...params, user, limit + 1, offset).all();
     // Cover the full filtered history, not just its current 100-event page.
@@ -113,6 +114,8 @@ export async function userReport(db, url, dates, personal, excludePersonal, page
     measured.push(...history.measured);
     const byId = new Map(history.rows.map(row => [row.id, row]));
     for (const row of visible) {
+      row.inbound = parseInbound(row.inbound_details);
+      delete row.inbound_details;
       if (byId.has(row.id)) Object.assign(row, byId.get(row.id));
       else if (["page_view", "pdf_request"].includes(row.kind)) row.readingStatus = "untracked";
     }

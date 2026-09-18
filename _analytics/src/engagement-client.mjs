@@ -2,8 +2,12 @@
 import homepageAttentionSource from "./homepage-attention-client.mjs";
 import pdfAttentionSource from "./pdf-attention-client.mjs";
 import recaptchaSource from "./recaptcha-client.mjs";
+import { inboundUrl } from "./inbound.mjs";
 export default String.raw`(() => {
   "use strict";
+  const inboundUrl = ${inboundUrl.toString()};
+  window.acwInboundDetails = () => ({ referrerUrl: inboundUrl(document.referrer),
+    landingUrl: inboundUrl(typeof location === "undefined" ? "" : location.href) });
   const HOUR = 3600000;
   const CHECKPOINT = 300000;
   const EARLY_CHECKPOINT = 15000;
@@ -117,8 +121,12 @@ export default String.raw`(() => {
       const eventKind = kind === "pdf" || kind === "pdf_view" ? "pdf_view" : "page_view";
       let referrer = "";
       try { referrer = new URL(document.referrer).origin; } catch {}
+      const inbound = window.acwInboundDetails();
+      const query = new URL(inbound.landingUrl || "https://www.andrewcwmyers.com").searchParams;
+      const campaign = key => (query.get(key) || "").replace(/[^a-zA-Z0-9_. -]/g, "").slice(0, 100);
       const ok = await post("/__analytics/event", JSON.stringify({ id: nextId, path,
-        kind: eventKind, engagement: true, referrer, source: "", medium: "", campaign: "" }));
+        kind: eventKind, engagement: true, referrer, inbound,
+        source: campaign("utm_source"), medium: campaign("utm_medium"), campaign: campaign("utm_campaign") }));
       if (ok && !cancelled && allowed()) {
         successor = startEngagement({ id: nextId, path, kind });
         for (const at of queuedDownloads) successor.download(at);

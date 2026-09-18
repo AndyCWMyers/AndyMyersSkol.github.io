@@ -5,6 +5,7 @@ import vm from "node:vm";
 import { pdfViewerResponse, isPdfNavigation } from "../src/pdf-viewer.mjs";
 import template from "../src/pdf-viewer-template.mjs";
 import documents from "../src/documents.mjs";
+import { inboundDetails } from "../src/inbound.mjs";
 
 const asset = name => new URL("../viewer-assets/" + name, import.meta.url);
 
@@ -29,6 +30,7 @@ async function bootstrap({ tracking = true, privacy = {}, cookie = "", visible =
     open(args) { assert.equal(this, window.PDFViewerApplication); opens.push(args); return "opened"; } };
   window.PDFViewerApplicationOptions = { setAll: values => Object.assign(options, values) };
   window.acwStartEngagement = values => { starts.push(values); return { download: () => downloads++, stop() {} }; };
+  window.acwInboundDetails = () => inboundDetails(document.referrer, "https://site.example/paper.pdf?utm_content=post&token=secret", "browser");
   vm.runInNewContext(script, { window, document, navigator: privacy, URL, AbortController,
     location: { href: "https://site.example/paper.pdf?file=evil.pdf&utm_source=test%3C%3E#page=2&zoom=125" },
     crypto: { randomUUID: () => "pdf-view-id" },
@@ -192,7 +194,8 @@ test("PDF view waits for rendered+visible, then ack before tracker; native downl
   h.window.emit("pageshow");
   assert.equal(h.requests.length, 1);
   const body = JSON.parse(h.requests[0].body);
-  assert.deepEqual(body, { kind: "pdf_view", id: "pdf-view-id", path: "/paper.pdf", referrer: "https://ref.example", source: "test", medium: "", campaign: "" });
+  assert.deepEqual(body, { kind: "pdf_view", id: "pdf-view-id", path: "/paper.pdf", referrer: "https://ref.example", source: "test", medium: "", campaign: "",
+    inbound: { referrerUrl: "https://ref.example/sensitive", landingUrl: "https://site.example/paper.pdf?utm_content=post", via: "browser" } });
   assert.equal(h.options.defaultUrl, "/paper.pdf?__pdf=raw");
   assert.equal(h.options.annotationEditorMode, -1);
   assert.equal(h.options.enableScripting, false);

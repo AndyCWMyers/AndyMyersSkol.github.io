@@ -26,6 +26,7 @@ function database(includeHistoryIndex = true) {
   db.exec(readFileSync(new URL("../migrations/0014_homepage_attention.sql", import.meta.url), "utf8"));
   db.exec(readFileSync(new URL("../migrations/0015_pdf_attention.sql", import.meta.url), "utf8"));
   db.exec(readFileSync(new URL("../migrations/0016_recaptcha_scores.sql", import.meta.url), "utf8"));
+  db.exec(readFileSync(new URL("../migrations/0017_inbound_details.sql", import.meta.url), "utf8"));
   const prepare = (sql) => { assert.ok((sql.match(/UNION ALL/g) || []).length < 5, "D1 compound SELECT limit"); return ({ bind: (...params) => ({
     run: async () => db.prepare(sql).run(...params),
     all: async () => ({ results: db.prepare(sql).all(...params) }),
@@ -39,6 +40,34 @@ function context() {
 }
 
 function request(path, init) { return new Request(ORIGIN + path, init); }
+
+test("expanded inbound attribution saves browser and raw PDF sources in existing event rows", async () => {
+  const { DB, db } = database(), ctx = context();
+  const referrerUrl = "https://example.com/research?q=earmarks&email=private%40example.com#secret";
+  const landingUrl = ORIGIN + "/?utm_source=newsletter&utm_content=paper&utm_term=spending&gclid=123&token=secret";
+  const body = { id: crypto.randomUUID(), kind: "page_view", path: "/", referrer: "https://example.com",
+    source: "newsletter", inbound: { referrerUrl, landingUrl, via: "forged" } };
+  const headers = { Origin: ORIGIN, Cookie: "__Host-acw_vid=" + "a".repeat(32) };
+  assert.equal((await worker.fetch(request("/__analytics/event", { method: "POST", headers, body: JSON.stringify(body) }), { DB }, ctx)).status, 204);
+  await worker.fetch(request("/paper.pdf?utm_content=direct&msclkid=abc&token=secret", { headers: { ...headers, Referer: referrerUrl } }),
+    { DB, ORIGIN: { fetch: async () => new Response("%PDF", { headers: { "Content-Type": "application/pdf" } }) } }, ctx);
+  await ctx.finish();
+  const rows = db.prepare("SELECT * FROM events ORDER BY rowid").all();
+  assert.equal(rows.length, 2);
+  assert.equal(rows[0].referrer, "example.com");
+  assert.deepEqual(JSON.parse(rows[0].inbound_details), { referrerUrl: "https://example.com/research?q=earmarks",
+    landingUrl: ORIGIN + "/?utm_source=newsletter&utm_content=paper&utm_term=spending&gclid=123", via: "browser" });
+  assert.deepEqual(JSON.parse(rows[1].inbound_details), { referrerUrl: "https://example.com/research?q=earmarks",
+    landingUrl: ORIGIN + "/paper.pdf?utm_content=direct&msclkid=abc", via: "request" });
+  const date = new Date().toLocaleDateString("en-CA", { timeZone: "America/Los_Angeles" });
+  const response = await worker.fetch(request(`/__analytics/report?view=users&user=${rows[0].visitor_hash.slice(0, 24)}&start=${date}&end=${date}`,
+    { headers: { Authorization: `Bearer ${SECRET}` } }), { DB, READ_TOKEN: SECRET }, context());
+  assert.equal(response.status, 200);
+  const history = await response.json();
+  assert.ok(history.rows.some(row => row.inbound?.via === "browser"));
+  assert.ok(history.rows.every(row => !("inbound_details" in row)));
+  assert.ok(!JSON.stringify(history).includes("token=secret"));
+});
 
 test("county collection trusts only edge metadata and never stores coordinates or submitted geography", async () => {
   const { DB, db } = database(), ctx = context();

@@ -39,8 +39,12 @@ and private engagement reports.
 
 On the first successful page render while visible, the viewer POSTs
 `/__analytics/event` with `{kind:'pdf_view', id, path,
-referrer, source, medium, campaign}`. Referrer is an origin or empty string;
-campaigns use the existing sanitized UTM rules. A single ID survives retries,
+referrer, source, medium, campaign, inbound}`. Referrer is an origin or empty string;
+campaigns use the existing sanitized UTM rules. Optional `inbound` contains
+sanitized `referrerUrl` and `landingUrl` (paths plus bounded attribution/search
+parameters, never arbitrary queries or fragments). Both browser and server apply
+`src/inbound.mjs`; the engagement helper exposes `window.acwInboundDetails()`.
+A single ID survives retries,
 focus changes, and BFCache. The Worker creates the view row and engagement
 session with that same ID. No synthetic GA page view is emitted by the viewer.
 The ID comes from the server's diagnostic meta tag when present, otherwise a
@@ -110,8 +114,9 @@ At a 129th distinct UTC hour, the helper sends the complete old session with
 waits for OK before starting its next tracker. New-view kind is preserved; this
 is the only automatic session/view rotation mechanism. A failed rotation stops tracking
 and logs a warning rather than truncating old buckets. The original returned
-handle delegates to the successor. Rotation uses empty campaign fields and an
-origin-only referrer. The applicable bucket caps keep bodies below 64,512 bytes.
+handle delegates to the successor. Rotation retains the current document's
+campaign fields, origin-only legacy referrer, and sanitized inbound URLs.
+The applicable bucket caps keep bodies below 64,512 bytes.
 
 Both modules honor DNT, GPC, and `__Host-acw_ignore=1` (also checked during
 tracking/retries). The personal cookie does not suppress recording. With

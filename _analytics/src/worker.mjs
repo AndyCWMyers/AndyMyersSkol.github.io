@@ -1,4 +1,5 @@
 import clientSource from "./client.mjs";
+import { inboundDetails } from "./inbound.mjs";
 import { pdfIdentity, pdfCookie, sendPdfEvent } from "./ga.mjs";
 import { excludedBrowser, personalBrowser, preferences, visitorIdentity, visitorHash } from "./preferences.mjs";
 import documents from "./documents.mjs";
@@ -82,21 +83,23 @@ function metadata(request) {
   const url = new URL(request.url);
   const cf = request.cf || {};
   const info = agentInfo(request.headers.get("User-Agent") || "");
-  // Referrer paths and arbitrary query strings can contain personal information.
+  // Preserve only bounded, sanitized attribution URLs alongside legacy domains.
   const referrerUrl = cleanUrl(request.headers.get("Referer"));
   const referrer = referrerUrl ? new URL(referrerUrl).hostname : "";
   const referrerStatus = referrer ? "known" : request.headers.has("Referer") ? "unknown" : "direct";
   const campaign = (key) => (url.searchParams.get(key) || "").replace(/[^a-zA-Z0-9_. -]/g, "").slice(0, 100);
   return { ...info, ...estimatedCounty(cf), referrer, referrerStatus, country: String(cf.country || "").slice(0, 2), region: String(cf.regionCode || "").slice(0, 20),
     city: typeof cf.city === "string" ? cf.city.replace(/[\u0000-\u001f\u007f]/g, "").trim().slice(0, 100) : "",
-    source: campaign("utm_source"), medium: campaign("utm_medium"), campaign: campaign("utm_campaign") };
+    source: campaign("utm_source"), medium: campaign("utm_medium"), campaign: campaign("utm_campaign"),
+    inbound: inboundDetails(request.headers.get("Referer"), request.url, "request") };
 }
 
 function browserAttribution(body) {
   const referrer = cleanUrl(body.referrer);
   const campaign = key => typeof body[key] === "string" ? body[key].replace(/[^a-zA-Z0-9_. -]/g, "").slice(0, 100) : "";
   return { referrer: referrer ? new URL(referrer).hostname : "", referrerStatus: referrer ? "known" : body.referrer === "" ? "direct" : "unknown",
-    source: campaign("source"), medium: campaign("medium"), campaign: campaign("campaign") };
+    source: campaign("source"), medium: campaign("medium"), campaign: campaign("campaign"),
+    inbound: body.inbound ? inboundDetails(body.inbound.referrerUrl, body.inbound.landingUrl, "browser") : undefined };
 }
 
 async function record(request, env, event) {
@@ -107,15 +110,15 @@ async function record(request, env, event) {
   // One atomic insert handles concurrent PDF retries across Worker instances.
   // Keep the raw row; the earliest counted retrieval anchors a five-second window.
   const inserted = await env.DB.prepare(`INSERT OR IGNORE INTO events
-    (id, occurred_at, kind, path, target, referrer, source, medium, campaign, country, region, browser, device, bot, status, visitor_hash, referrer_status, is_personal, county, county_fips, ip_address, city, os, bot_score, duplicate_of)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+    (id, occurred_at, kind, path, target, referrer, source, medium, campaign, country, region, browser, device, bot, status, visitor_hash, referrer_status, is_personal, county, county_fips, ip_address, city, os, bot_score, inbound_details, duplicate_of)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
       CASE WHEN ? = 'pdf_request' AND ? != '' THEN COALESCE((
         SELECT id FROM events WHERE kind = 'pdf_request' AND duplicate_of = ''
           AND visitor_hash = ? AND path = ? AND occurred_at BETWEEN ? AND ?
         ORDER BY occurred_at, rowid LIMIT 1
       ), '') ELSE '' END)`)
     .bind(id, now, event.kind, event.path, event.target || "",
-      m.referrer, m.source, m.medium, m.campaign, m.country, m.region, m.browser, m.device, m.bot, event.status || 200, visitor, m.referrerStatus, personalBrowser(request) ? 1 : 0, m.county, m.county_fips, connectingIp(request), m.city, m.os, null,
+      m.referrer, m.source, m.medium, m.campaign, m.country, m.region, m.browser, m.device, m.bot, event.status || 200, visitor, m.referrerStatus, personalBrowser(request) ? 1 : 0, m.county, m.county_fips, connectingIp(request), m.city, m.os, null, m.inbound ? JSON.stringify(m.inbound) : null,
       event.viewer ? '' : event.kind, visitor, visitor, event.path, now - 5, now).run();
   if ((inserted.meta?.changes ?? inserted.changes) === 0) return false;
   if (event.kind !== 'pdf_request') return true;

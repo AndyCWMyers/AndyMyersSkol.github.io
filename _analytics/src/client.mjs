@@ -1,5 +1,7 @@
 // Keep browser code as text so Worker bundling cannot inject out-of-scope helpers.
+import { inboundUrl } from "./inbound.mjs";
 export default String.raw`function startAnalytics(measurementId) {
+  const inboundUrl = ${inboundUrl.toString()};
   if (navigator.globalPrivacyControl || navigator.doNotTrack === "1") return;
   const endpoint = "/__analytics/event";
 
@@ -13,7 +15,8 @@ export default String.raw`function startAnalytics(measurementId) {
     const id = crypto.randomUUID();
     const engagement = kind === "page_view" && ["/", "/index", "/index.html"].includes(location.pathname)
       && typeof window !== "undefined" && typeof window.acwStartEngagement === "function";
-    const body = JSON.stringify({ id, kind, path: location.pathname, target, referrer, ...(engagement ? { engagement: true } : {}),
+    const body = JSON.stringify({ id, kind, path: location.pathname, target, referrer,
+      inbound: { referrerUrl: inboundUrl(document.referrer), landingUrl: inboundUrl(location.href) }, ...(engagement ? { engagement: true } : {}),
       source: campaign("utm_source"), medium: campaign("utm_medium"), campaign: campaign("utm_campaign") });
     if (engagement) {
       const start = attempt => fetch(endpoint, { method: "POST", body, keepalive: true }).then(response => {

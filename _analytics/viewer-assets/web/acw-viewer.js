@@ -49,6 +49,7 @@
       const response = await fetch("/__analytics/event", { method: "POST", credentials: "same-origin",
         headers: { "Content-Type": "text/plain" }, keepalive: true, signal: controller.signal,
         body: JSON.stringify({ kind: "pdf_view", id, path, referrer,
+          inbound: window.acwInboundDetails?.(),
           source: campaign("utm_source"), medium: campaign("utm_medium"), campaign: campaign("utm_campaign") }) });
       if (response.ok && allowed()) {
         try { tracker = window.acwStartEngagement({ id, path, kind: "pdf_view" }); }

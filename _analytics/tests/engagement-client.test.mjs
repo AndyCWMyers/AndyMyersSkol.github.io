@@ -28,6 +28,7 @@ function browser({ start = Date.UTC(2026, 8, 17, 6, 59, 59), cookie = "", privac
   }
   const navigator = { ...privacy };
   const context = vm.createContext({ window, document, navigator, URL, AbortController,
+    location: new URL("https://www.andrewcwmyers.com/paper.pdf?utm_source=newsletter&utm_content=post&token=secret"),
     console: { warn: text => warnings.push(text) },
     Date: { now: () => wall }, performance: { now: () => mono },
     crypto: { randomUUID: () => "rotated-" + (++serial) },
@@ -291,6 +292,9 @@ test("128-hour cap flushes full old session then awaits new view acknowledgement
   assert.equal(event.body.kind, "pdf_view");
   assert.equal(event.body.engagement, true);
   assert.equal(event.body.referrer, "https://example.com");
+  assert.equal(event.body.source, "newsletter");
+  assert.equal(event.body.inbound.referrerUrl, "https://example.com/private?q=secret");
+  assert.equal(event.body.inbound.landingUrl, "https://www.andrewcwmyers.com/paper.pdf?utm_source=newsletter&utm_content=post");
   assert.notEqual(event.body.id, old.id);
   release({ ok: true });
   await settle();

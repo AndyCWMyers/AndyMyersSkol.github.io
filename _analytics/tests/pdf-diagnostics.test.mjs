@@ -19,6 +19,7 @@ function setup(extra = {}) {
   return { db, env, async fetch(path, init) { const response = await worker.fetch(new Request(ORIGIN + path, init), env, ctx); await Promise.all(pending.splice(0)); return response; } };
 }
 function post(body, cookie, headers = {}) { return { method: "POST", headers: { Origin: ORIGIN, Cookie: cookie, ...headers }, body: JSON.stringify(body) }; }
+function today() { return new Intl.DateTimeFormat("en-CA", { timeZone: "America/Los_Angeles", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date()); }
 async function viewer(h, headers = {}) {
   const response = await h.fetch(PDF, { headers: { Accept: "text/html", "User-Agent": "Test Browser", ...headers } });
   const html = await response.text();
@@ -52,7 +53,7 @@ test("viewer diagnostics are linked, private, bounded and separate from view tot
   row = h.db.prepare("SELECT * FROM pdf_diagnostics").get();
   assert(row.started_at && row.rendered_at && row.error_at);
   assert.equal(h.db.prepare("SELECT COUNT(*) AS n FROM events").get().n, 0);
-  const day = new Date().toISOString().slice(0,10), path = `/__analytics/report?view=pdf_diagnostics&start=${day}&end=${day}&excludePersonal=0`;
+  const day = today(), path = `/__analytics/report?view=pdf_diagnostics&start=${day}&end=${day}&excludePersonal=0`;
   assert.equal((await h.fetch(path)).status, 401);
   const report = await (await h.fetch(path, { headers: { Authorization: `Bearer ${SECRET}` } })).json();
   assert.equal(report.rows[0].id, v.id); assert.equal(report.rows[0].confirmed, 0);
@@ -102,7 +103,7 @@ test("personal diagnostic rows are filterable without exposing other user profil
   const h = setup();
   await viewer(h, { Cookie: "__Host-acw_personal=1" });
   const v = await viewer(h);
-  const day = new Date().toISOString().slice(0,10), query = `/__analytics/report?view=pdf_diagnostics&start=${day}&end=${day}`;
+  const day = today(), query = `/__analytics/report?view=pdf_diagnostics&start=${day}&end=${day}`;
   const options = { headers: { Authorization: `Bearer ${SECRET}` } };
   const report = await (await h.fetch(query, options)).json();
   assert.deepEqual(report.rows.map(row => row.id), [v.id]);

@@ -1,5 +1,6 @@
 import { validAttention, summarizeAttention, ATTENTION_MONOTONIC } from "./homepage-attention.mjs";
 import { validPdfAttention, summarizePdfAttention, PDF_ATTENTION_MONOTONIC } from "./pdf-attention.mjs";
+import { clientDetails, validInteractions, summarizeInteractions, INTERACTIONS_MONOTONIC } from "./visit-details.mjs";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const KINDS = new Set(["page_view", "pdf_request"]);
@@ -19,7 +20,8 @@ export function validReading(body, now = Date.now()) {
     || typeof body.active !== "boolean" || !Number.isSafeInteger(body.milliseconds) || body.milliseconds < 0 || body.milliseconds > 128 * 3600000
     || !Number.isSafeInteger(body.downloads) || body.downloads < 0 || body.downloads > 10000
     || !Number.isSafeInteger(body.at) || body.at > now + 60000 || body.at < now - 86400000
-    || !Array.isArray(body.hours) || body.hours.length > 128) return false;
+    || !Array.isArray(body.hours) || body.hours.length > 128
+    || (body.clientDetails !== undefined && !clientDetails(body.clientDetails))) return false;
   const seen = new Set();
   let milliseconds = 0, downloads = 0;
   for (const row of body.hours) {
@@ -28,6 +30,7 @@ export function validReading(body, now = Date.now()) {
       || !Number.isSafeInteger(row.milliseconds) || row.milliseconds < 0 || row.milliseconds > 3600000
       || !Number.isSafeInteger(row.downloads) || row.downloads < 0 || row.downloads > 10000
       || !validAttention(row.attention, row.milliseconds) || !validPdfAttention(row.pdfAttention, row.milliseconds)
+      || !validInteractions(row.interactions)
       || (row.attention !== undefined && row.pdfAttention !== undefined)) return false;
     seen.add(row.hour); milliseconds += row.milliseconds; downloads += row.downloads;
   }
@@ -46,26 +49,30 @@ export async function saveReading(db, body, visitor, now = Date.now()) {
   if (session.personal) return 204;
   if (body.hours.some(row => row.attention !== undefined) && (session.kind !== "page_view" || session.path !== "/")) return 400;
   if (body.hours.some(row => row.pdfAttention !== undefined) && session.kind !== "pdf_request") return 400;
+  if (body.hours.some(row => row.interactions !== undefined) && session.kind !== "pdf_request") return 400;
   if (body.seq <= session.seq) return 204;
   if (body.milliseconds < session.milliseconds || body.downloads < session.downloads
     || body.milliseconds > now - session.started_at * 1000 + 60000
     || (session.kind === "page_view" && body.downloads)
     || body.hours.some(row => row.hour < Math.floor(session.started_at / 3600) * 3600 - 3600)) return 400;
   const lastSeen = Math.min(Math.floor(now / 1000), Math.floor(body.at / 1000));
-  const statements = [db.prepare(`UPDATE reading_sessions SET seq = ?, milliseconds = ?, downloads = ?, last_seen = ?, active = ?
+  const details = clientDetails(body.clientDetails);
+  const statements = [db.prepare(`UPDATE reading_sessions SET seq = ?, milliseconds = ?, downloads = ?, last_seen = ?, active = ?,
+      client_details = CASE WHEN ? IS NULL THEN client_details ELSE json_patch(COALESCE(client_details,'{}'), ?) END
     WHERE id = ? AND visitor_hash = ? AND seq < ? AND milliseconds <= ? AND downloads <= ?
       AND NOT EXISTS (SELECT 1 FROM reading_hours h WHERE h.session_id = reading_sessions.id
         AND NOT EXISTS (SELECT 1 FROM json_each(?) j WHERE json_extract(j.value,'$.hour') = h.hour
           AND json_extract(j.value,'$.milliseconds') >= h.milliseconds AND json_extract(j.value,'$.downloads') >= h.downloads
-          AND ${ATTENTION_MONOTONIC} AND ${PDF_ATTENTION_MONOTONIC}))`)
+          AND ${ATTENTION_MONOTONIC} AND ${PDF_ATTENTION_MONOTONIC} AND ${INTERACTIONS_MONOTONIC}))`)
     .bind(body.seq, body.milliseconds, body.downloads, lastSeen, body.active && now / 1000 - lastSeen <= 315 ? 1 : 0,
+      details ? JSON.stringify(details) : null, details ? JSON.stringify(details) : null,
       body.id, visitor, body.seq, body.milliseconds, body.downloads, JSON.stringify(body.hours))];
   // Replayed/out-of-order check-ins cannot add time or download actions twice.
-  statements.push(db.prepare(`INSERT INTO reading_hours(session_id, hour, milliseconds, downloads, attention, pdf_attention)
-    SELECT s.id, json_extract(j.value, '$.hour'), json_extract(j.value, '$.milliseconds'), json_extract(j.value, '$.downloads'), json_extract(j.value, '$.attention'), json_extract(j.value, '$.pdfAttention')
+  statements.push(db.prepare(`INSERT INTO reading_hours(session_id, hour, milliseconds, downloads, attention, pdf_attention, interactions)
+    SELECT s.id, json_extract(j.value, '$.hour'), json_extract(j.value, '$.milliseconds'), json_extract(j.value, '$.downloads'), json_extract(j.value, '$.attention'), json_extract(j.value, '$.pdfAttention'), json_extract(j.value, '$.interactions')
     FROM reading_sessions s, json_each(?) j WHERE s.id = ? AND s.visitor_hash = ? AND s.seq = ? AND changes() = 1
-    ON CONFLICT(session_id, hour) DO UPDATE SET milliseconds = MAX(milliseconds, excluded.milliseconds), downloads = MAX(downloads, excluded.downloads), attention = excluded.attention, pdf_attention = excluded.pdf_attention
-    WHERE excluded.milliseconds > milliseconds OR excluded.downloads > downloads OR attention IS NOT excluded.attention OR pdf_attention IS NOT excluded.pdf_attention`)
+    ON CONFLICT(session_id, hour) DO UPDATE SET milliseconds = MAX(milliseconds, excluded.milliseconds), downloads = MAX(downloads, excluded.downloads), attention = excluded.attention, pdf_attention = excluded.pdf_attention, interactions = excluded.interactions
+    WHERE excluded.milliseconds > milliseconds OR excluded.downloads > downloads OR attention IS NOT excluded.attention OR pdf_attention IS NOT excluded.pdf_attention OR interactions IS NOT excluded.interactions`)
     .bind(JSON.stringify(body.hours), body.id, visitor, body.seq));
   await db.batch(statements);
   return 204;
@@ -126,17 +133,19 @@ export async function historyReading(db, dates, excludePersonal, ids) {
   for (let offset = 0; offset < ids.length; offset += 90) {
     const batch = ids.slice(offset, offset + 90);
     const response = await db.prepare(`SELECT s.id,
-    s.recaptcha_score AS botScore, s.recaptcha_at AS botScoreAt,
+    s.recaptcha_score AS botScore, s.recaptcha_at AS botScoreAt, s.recaptcha_status AS assessmentStatus, s.client_details AS clientDetails,
     CASE WHEN COUNT(h.session_id) > 0 THEN 'tracked' WHEN s.seq < 0 THEN 'no_updates' ELSE 'outside_period' END AS readingStatus,
     SUM(h.milliseconds) / 1000.0 AS readingSeconds, SUM(h.downloads) AS downloads,
-    json_group_array(json(h.attention)) AS attentionHours, json_group_array(json(h.pdf_attention)) AS pdfAttentionHours FROM reading_sessions s
+    json_group_array(json(h.attention)) AS attentionHours, json_group_array(json(h.pdf_attention)) AS pdfAttentionHours,
+    json_group_array(json(h.interactions)) AS interactionHours FROM reading_sessions s
     LEFT JOIN reading_hours h ON h.session_id = s.id AND h.hour >= ? AND h.hour < ?
     WHERE s.id IN (${batch.map(() => "?").join(",")}) ${excludePersonal ? `AND NOT ${PERSONAL}` : ""} GROUP BY s.id`)
       .bind(dates.from, dates.until, ...batch).all();
-    rows.push(...response.results.map(({ readingSeconds, downloads, attentionHours, pdfAttentionHours, ...row }) => {
+    rows.push(...response.results.map(({ readingSeconds, downloads, attentionHours, pdfAttentionHours, interactionHours, clientDetails: details, ...row }) => {
       const homepageAttention = summarizeAttention(JSON.parse(attentionHours));
       const pdfAttention = summarizePdfAttention(JSON.parse(pdfAttentionHours));
-      return { ...row, ...(readingSeconds === null ? {} : { readingSeconds, downloads }), ...(homepageAttention ? { homepageAttention } : {}), ...(pdfAttention ? { pdfAttention } : {}) };
+      const interactions = summarizeInteractions(JSON.parse(interactionHours));
+      return { ...row, ...(details ? { clientDetails: JSON.parse(details) } : {}), ...(interactions ? { interactions } : {}), ...(readingSeconds === null ? {} : { readingSeconds, downloads }), ...(homepageAttention ? { homepageAttention } : {}), ...(pdfAttention ? { pdfAttention } : {}) };
     }));
     measured.push(["historyReading", response]);
   }

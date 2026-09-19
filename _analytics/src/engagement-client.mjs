@@ -2,6 +2,7 @@
 import homepageAttentionSource from "./homepage-attention-client.mjs";
 import pdfAttentionSource from "./pdf-attention-client.mjs";
 import recaptchaSource from "./recaptcha-client.mjs";
+import visitDetailsSource from "./visit-details-client.mjs";
 import { inboundUrl } from "./inbound.mjs";
 export default String.raw`(() => {
   "use strict";
@@ -19,6 +20,7 @@ export default String.raw`(() => {
   ${homepageAttentionSource}
   ${pdfAttentionSource}
   ${recaptchaSource}
+  ${visitDetailsSource}
 
   function allowed() {
     return !navigator.globalPrivacyControl && navigator.doNotTrack !== "1" &&
@@ -43,7 +45,9 @@ export default String.raw`(() => {
 
   function startEngagement({ id, path, kind }) {
     if (!allowed() || !id || !path || !kind) return noop;
-    void assessVisit(id, kind).catch(() => {});
+    let assessment = "not_configured";
+    void assessVisit(id, kind, status => { assessment = status; }).catch(() => {});
+    const details = visitDetails(kind);
     let milliseconds = 0, downloads = 0, seq = 0, nextCheckpoint = EARLY_CHECKPOINT;
     let lastMono = performance.now(), lastWall = Date.now();
     let focused = document.hasFocus(), inPage = true, stopped = false, cancelled = false;
@@ -56,6 +60,7 @@ export default String.raw`(() => {
     const attention = kind === "page_view" && ["/", "/index", "/index.html"].includes(path)
       ? homepageAttention({ bucket, active, allowed })
       : ["pdf", "pdf_view"].includes(kind) ? pdfAttention({ bucket, active, allowed }) : null;
+    const interactions = kind !== "page_view" ? pdfInteractions({ bucket, active, allowed }) : null;
 
     function active() {
       return !stopped && inPage && focused && document.visibilityState === "visible";
@@ -65,7 +70,9 @@ export default String.raw`(() => {
       const hour = Math.floor(wall / HOUR) * 3600;
       if (!hours.has(hour)) {
         if (hours.size >= (attention?.maxHours || MAX_HOURS)) return null;
-        hours.set(hour, { hour, milliseconds: 0, downloads: 0 });
+        const item = { hour, milliseconds: 0, downloads: 0 };
+        interactions?.initialize(item);
+        hours.set(hour, item);
       }
       return hours.get(hour);
     }
@@ -100,7 +107,7 @@ export default String.raw`(() => {
         ? (Math.floor(milliseconds / EARLY_CHECKPOINT) + 1) * EARLY_CHECKPOINT
         : milliseconds + CHECKPOINT;
       const body = JSON.stringify({ id, seq: ++seq, active: isActive,
-        milliseconds, downloads, at: Date.now(),
+        milliseconds, downloads, at: Date.now(), clientDetails: { ...details(), assessment },
         hours: Array.from(hours.values(), item => ({ ...item })).sort((a, b) => a.hour - b.hour) });
       void post("/__analytics/engagement", body);
     }
@@ -108,6 +115,7 @@ export default String.raw`(() => {
     function detach() {
       clearInterval(timer);
       attention?.detach();
+      interactions?.detach();
       for (const [target, event, callback] of listeners) target.removeEventListener(event, callback);
     }
 

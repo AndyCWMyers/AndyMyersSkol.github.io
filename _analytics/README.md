@@ -581,7 +581,51 @@ GA4 may not show these events in engagement/realtime metrics because no engageme
 duration is invented. The Command Center uses independent Cloudflare aggregates;
 GA4 historical reports remain in Google Analytics. GA4 Data API import is not set up.
 
+## Visit Details And Return Visits
+
+Migration `0018_visit_details.sql` adds edge-supplied network ASN/owner to existing
+event inserts, browser details to the existing reading-session update, and PDF
+interaction counts to existing hourly updates. No per-action requests or extra
+per-checkpoint row writes are added. These fields stay in the authenticated
+Cloudflare dashboard; they are not sent to GA4. Network ownership is not a person's
+identity or institutional affiliation (VPNs, proxies and shared networks matter).
+
+The user history's Visit details dropdown shows up to five browser language tags,
+initial/latest viewport in CSS pixels, navigation type, response/DOM/load timings
+from navigation start, and the first PDF page's render time. Load timings can be
+absent at startup and arrive with later checkpoints; they do not prove readability
+or include offline/native-reader activity. Existing PDF diagnostics show failures.
+PDF search actions are debounced after 700 ms of typing, with find-next/previous
+also counted; search text is never stored. Print requests are not completed prints.
+Outline links and zoom buttons/selector/keyboard shortcuts are counted. Browser
+zoom, pinch/wheel gestures and printing/downloading outside PDF.js are not inferred.
+Counters are visible/focused only, bounded, hourly/date-scoped and retry-idempotent.
+Host reading/activity exclusions and DNT/GPC remain unchanged.
+
+Server assessment status is authoritative; client loading/execution/submission
+status is saved at existing checkpoints to help explain missing Google scores.
+Failure causes such as blockers versus a network outage cannot be distinguished;
+no JavaScript means no client diagnosis. Missing data remains unknown, not zero.
+
+New network/client/action fields are prospective, not backfilled guesses.
+
 ## Limits And Recovery
+
+Paper/CV popups request `view=pdf_pages&section=main&name=/...pdf` only when
+opened. One path-indexed query aggregates per-page seconds across hourly buckets
+within each reading session, then averages across measured sessions that reached
+that page. Repeated hours never inflate the denominator; measured zero is included,
+unmeasured requests/untimed historic hours are excluded, and unvisited pages have
+no average. Date and personal filters apply. Migration `0019_pdf_page_report.sql`
+adds a partial PDF-session path index, not new event/checkpoint records.
+
+The Homepage popup uses `view=homepage_attention&section=main&name=/`, with one
+query averaging existing visible-entry milliseconds per session, across hours.
+Only sessions that reached each paper/dataset entry enter its average; measured
+zero is included and unvisited entries remain unmeasured. Entry times can overlap
+when multiple entries are visible. Bio and section-specific times are not stored.
+Migration `0020_homepage_report.sql` adds a homepage-session path index. This
+report adds no tracking writes and uses the same date and personal filters.
 
 The authenticated report endpoint's `view=usage` reads Cloudflare's GraphQL
 account metrics without querying D1. A dedicated Account Analytics:Read token

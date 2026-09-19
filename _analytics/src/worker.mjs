@@ -15,6 +15,8 @@ import { pdfViewerResponse, pdfNavigationReason } from "./pdf-viewer.mjs";
 import { readUsage } from "./usage.mjs";
 import { assessVisit } from "./recaptcha.mjs";
 import { recordPdfDiagnostic, validDiagnosticSignal, updatePdfDiagnostic, pdfDiagnostics } from "./pdf-diagnostics.mjs";
+import { pdfPageReport } from "./pdf-page-report.mjs";
+import { homepageReport } from "./homepage-report.mjs";
 
 // Configuration and bounded, privacy-preserving normalization.
 const HOSTS = new Set(["www.andrewcwmyers.com", "andrewcwmyers.com"]);
@@ -90,6 +92,8 @@ function metadata(request) {
   const campaign = (key) => (url.searchParams.get(key) || "").replace(/[^a-zA-Z0-9_. -]/g, "").slice(0, 100);
   return { ...info, ...estimatedCounty(cf), referrer, referrerStatus, country: String(cf.country || "").slice(0, 2), region: String(cf.regionCode || "").slice(0, 20),
     city: typeof cf.city === "string" ? cf.city.replace(/[\u0000-\u001f\u007f]/g, "").trim().slice(0, 100) : "",
+    asn: Number.isInteger(cf.asn) && cf.asn > 0 && cf.asn <= 4294967295 ? cf.asn : null,
+    networkOrg: typeof cf.asOrganization === "string" ? cf.asOrganization.replace(/[\u0000-\u001f\u007f]/g, "").trim().slice(0, 200) : null,
     source: campaign("utm_source"), medium: campaign("utm_medium"), campaign: campaign("utm_campaign"),
     inbound: inboundDetails(request.headers.get("Referer"), request.url, "request") };
 }
@@ -110,8 +114,8 @@ async function record(request, env, event) {
   // One atomic insert handles concurrent PDF retries across Worker instances.
   // Keep the raw row; the earliest counted retrieval anchors a five-second window.
   const inserted = await env.DB.prepare(`INSERT OR IGNORE INTO events
-    (id, occurred_at, kind, path, target, referrer, source, medium, campaign, country, region, browser, device, bot, status, visitor_hash, referrer_status, is_personal, county, county_fips, ip_address, city, os, bot_score, inbound_details, duplicate_of)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+    (id, occurred_at, kind, path, target, referrer, source, medium, campaign, country, region, browser, device, bot, status, visitor_hash, referrer_status, is_personal, county, county_fips, ip_address, city, os, bot_score, inbound_details, network_asn, network_org, duplicate_of)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
       CASE WHEN ? = 'pdf_request' AND ? != '' THEN COALESCE((
         SELECT id FROM events WHERE kind = 'pdf_request' AND duplicate_of = ''
           AND visitor_hash = ? AND path = ? AND occurred_at BETWEEN ? AND ?
@@ -119,7 +123,7 @@ async function record(request, env, event) {
       ), '') ELSE '' END)`)
     .bind(id, now, event.kind, event.path, event.target || "",
       m.referrer, m.source, m.medium, m.campaign, m.country, m.region, m.browser, m.device, m.bot, event.status || 200, visitor, m.referrerStatus, personalBrowser(request) ? 1 : 0, m.county, m.county_fips, connectingIp(request), m.city, m.os, null, m.inbound ? JSON.stringify(m.inbound) : null,
-      event.viewer ? '' : event.kind, visitor, visitor, event.path, now - 5, now).run();
+      m.asn, m.networkOrg, event.viewer ? '' : event.kind, visitor, visitor, event.path, now - 5, now).run();
   if ((inserted.meta?.changes ?? inserted.changes) === 0) return false;
   if (event.kind !== 'pdf_request') return true;
   const stored = await env.DB.prepare("SELECT duplicate_of FROM events WHERE id = ?").bind(id).all();
@@ -254,6 +258,15 @@ async function report(request, env) {
   }
   const view = url.searchParams.get("view") || "all";
   if (!Object.hasOwn(REPORT_PLANS, view)) return json({ error: "Invalid report view" }, 400);
+  if (view === "pdf_pages" || view === "homepage_attention") {
+    const name = url.searchParams.get("name") || "";
+    if ((url.searchParams.get("section") || "main") !== "main" || cleanPath(name) !== name
+      || (view === "pdf_pages" ? !/\.pdf$/i.test(name) : name !== "/") || (page && page !== name)) return json({ error: "Invalid page selection" }, 400);
+    const { measured, ...value } = view === "pdf_pages" ? await pdfPageReport(env.DB, dates, name, excludePersonal)
+      : await homepageReport(env.DB, dates, excludePersonal);
+    return json({ generatedAt: new Date().toISOString(), timeZone: TIME_ZONE, start: dates.start, end: dates.end,
+      view, name, section: "main", page, excludePersonal, ...value, queryUsage: queryUsage([measured]) });
+  }
   if (view === "summary" && !page) {
     const summary = await headlineSummary(env.DB, dates, excludePersonal);
     const reading = await readingItems(env.DB, dates, excludePersonal);

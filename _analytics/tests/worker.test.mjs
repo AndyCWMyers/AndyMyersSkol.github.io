@@ -27,6 +27,7 @@ function database(includeHistoryIndex = true) {
   db.exec(readFileSync(new URL("../migrations/0015_pdf_attention.sql", import.meta.url), "utf8"));
   db.exec(readFileSync(new URL("../migrations/0016_recaptcha_scores.sql", import.meta.url), "utf8"));
   db.exec(readFileSync(new URL("../migrations/0017_inbound_details.sql", import.meta.url), "utf8"));
+  db.exec(readFileSync(new URL("../migrations/0018_visit_details.sql", import.meta.url), "utf8"));
   const prepare = (sql) => { assert.ok((sql.match(/UNION ALL/g) || []).length < 5, "D1 compound SELECT limit"); return ({ bind: (...params) => ({
     run: async () => db.prepare(sql).run(...params),
     all: async () => ({ results: db.prepare(sql).all(...params) }),

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import vm from "node:vm";
+import { readFileSync } from "node:fs";
 import source from "../src/engagement-client.mjs";
 
 class Target {
@@ -15,7 +16,7 @@ class Target {
 
 async function settle() { for (let i = 0; i < 12; i++) await Promise.resolve(); }
 
-function browser({ start = Date.UTC(2026, 8, 17, 6, 59, 59), cookie = "", privacy = {}, fetcher, kind = "pdf_view", nodes = [], pdf } = {}) {
+function browser({ start = Date.UTC(2026, 8, 17, 6, 59, 59), cookie = "", privacy = {}, fetcher, kind = "pdf_view", nodes = [], pdf, navigation = [], eventBus } = {}) {
   let mono = 0, wall = start, serial = 0, focused = true;
   const tasks = new Map(), requests = [], warnings = [];
   const window = new Target(), document = new Target();
@@ -23,14 +24,14 @@ function browser({ start = Date.UTC(2026, 8, 17, 6, 59, 59), cookie = "", privac
   Object.assign(document, { querySelectorAll: () => nodes, documentElement: { scrollHeight: 2000 } });
   Object.assign(window, { scrollY: 0, innerHeight: 800, innerWidth: 600 });
   if (pdf) {
-    window.PDFViewerApplication = { pdfViewer: { pagesCount: pdf.nodes.length, getPageView: i => ({ div: pdf.nodes[i] }) } };
+    window.PDFViewerApplication = { eventBus, pdfViewer: { pagesCount: pdf.nodes.length, getPageView: i => ({ div: pdf.nodes[i] }) } };
     document.getElementById = () => pdf.container;
   }
   const navigator = { ...privacy };
   const context = vm.createContext({ window, document, navigator, URL, AbortController,
     location: new URL("https://www.andrewcwmyers.com/paper.pdf?utm_source=newsletter&utm_content=post&token=secret"),
     console: { warn: text => warnings.push(text) },
-    Date: { now: () => wall }, performance: { now: () => mono },
+    Date: { now: () => wall }, performance: { now: () => mono, getEntriesByType: () => navigation },
     crypto: { randomUUID: () => "rotated-" + (++serial) },
     setInterval: fn => { const id = ++serial; tasks.set(id, { fn, interval: true }); return id; },
     clearInterval: id => tasks.delete(id),
@@ -60,6 +61,38 @@ function browser({ start = Date.UTC(2026, 8, 17, 6, 59, 59), cookie = "", privac
 }
 
 function latest(h) { return h.requests.filter(r => r.url.endsWith("/engagement")).at(-1).body; }
+
+test("language, viewport, timing and PDF commands share checkpoints without recording search text", async () => {
+  const bus = new Target(); bus.on = bus.addEventListener; bus.off = bus.removeEventListener;
+  const container = new Target();
+  Object.assign(container, { scrollTop: 0, scrollLeft: 0, getBoundingClientRect: () => ({ top: 0, bottom: 800, left: 0, right: 600, height: 800 }) });
+  const node = { dataset: { pageNumber: "1" }, getBoundingClientRect: () => ({ top: 0, bottom: 800, left: 0, right: 600, height: 800 }) };
+  const nav = { type: "navigate", responseStart: 25.4, domContentLoadedEventEnd: 200, loadEventEnd: 0 };
+  const h = browser({ start: Date.UTC(2026,8,17,7), pdf: { container, nodes: [node] }, eventBus: bus, privacy: { languages: ["en-US", "es"] }, navigation: [nav] });
+  assert.deepEqual(latest(h).clientDetails.languages, ["en-US", "es"]);
+  assert.equal(latest(h).clientDetails.loadMs, undefined);
+  bus.emit("find", { type: "", query: "DO NOT SAVE ME" });
+  await h.tick(300);
+  bus.emit("find", { type: "", query: "OR THIS" });
+  await h.tick(700);
+  bus.emit("beforeprint"); bus.emit("zoomin"); bus.emit("scalechanged");
+  assert.match(readFileSync(new URL("../viewer-assets/web/viewer.html", import.meta.url), "utf8"), /id="outlinesView"/);
+  h.document.emit("click", { isTrusted: true, target: { closest: selector => selector === "#outlinesView a" ? {} : null } });
+  assert.equal(h.requests.length, 1, "interaction actions must not create requests");
+  h.window.innerWidth = 390; h.window.acwPdfRenderMs = 1234; nav.loadEventEnd = 650;
+  for (let i = 0; i < 14; i++) await h.tick();
+  assert.deepEqual(latest(h).hours[0].interactions, { searches: 1, prints: 1, outline: 1, zoom: 2 });
+  assert.deepEqual(latest(h).clientDetails.initialViewport, [600,800]);
+  assert.deepEqual(latest(h).clientDetails.viewport, [390,800]);
+  assert.equal(latest(h).clientDetails.loadMs, 650);
+  assert.equal(latest(h).clientDetails.pdfRenderMs, 1234);
+  assert.doesNotMatch(JSON.stringify(h.requests), /DO NOT SAVE ME|OR THIS/);
+  await h.focus(false); bus.emit("beforeprint"); bus.emit("zoomout");
+  await h.focus(true);
+  assert.equal(latest(h).hours[0].interactions.prints, 1);
+  h.handle.stop();
+  assert.equal(bus.listeners.get("find").size, 0);
+});
 
 test("PDF records only visible pages, scrolls without extra requests and respects focus/host/privacy", async () => {
   const container = new Target();

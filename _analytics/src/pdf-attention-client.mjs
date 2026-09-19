@@ -55,7 +55,7 @@ export default String.raw`function pdfAttention({ bucket, active, allowed }) {
     for (const node of nodes) observer?.observe(node);
     container.addEventListener("scroll", scroll, { passive: true });
     // Bound dense page counters plus bitsets below the 64 KiB keepalive limit.
-    const maxHours = Math.min(16, Math.max(1, Math.floor(63000 / (total * 5 + Math.ceil(total / 32) * 11 + 200))));
+    const maxHours = Math.min(16, Math.max(1, Math.floor(61000 / (total * 5 + Math.ceil(total / 32) * 11 + 300))));
     return { maxHours, initialize: state, sample, detach() {
       observer?.disconnect();
       container.removeEventListener("scroll", scroll);

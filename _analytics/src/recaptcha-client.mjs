@@ -14,14 +14,18 @@ export default String.raw`let recaptchaLoading;
     return recaptchaLoading;
   }
 
-  async function assessVisit(id, kind) {
+  async function assessVisit(id, kind, status = () => {}) {
     const key = window.acwRecaptchaSiteKey;
     if (!key || !allowed() || assessedVisits.has(id)) return;
     assessedVisits.add(id);
-    const api = await loadRecaptcha(key);
+    status("loading");
+    let api, token;
+    try { api = await loadRecaptcha(key); } catch { status("script_failed"); return; }
     if (!allowed()) return;
-    const token = await api.execute(key, { action: kind === "page_view" ? "homepage_view" : "pdf_view" });
+    status("executing");
+    try { token = await api.execute(key, { action: kind === "page_view" ? "homepage_view" : "pdf_view" }); }
+    catch { status("execution_failed"); return; }
     if (!allowed() || typeof token !== "string") return;
     // This never gates rendering or engagement and never invokes a challenge.
-    await post("/__analytics/assessment", JSON.stringify({ id, token }));
+    status(await post("/__analytics/assessment", JSON.stringify({ id, token })) ? "submitted" : "submission_failed");
   }`;

@@ -121,10 +121,10 @@ test("PDF page time is date-scoped, cumulative and shares the existing hourly wr
 
 test("timed PDF payloads remain below the keepalive bound for every supported page count", () => {
   for (const total of [1, 4, 50, 200, 700, 1000, 5000, 10000]) {
-    const maxHours = Math.min(16, Math.max(1, Math.floor(63000 / (total * 5 + Math.ceil(total / 32) * 11 + 200))));
+    const maxHours = Math.min(16, Math.max(1, Math.floor(61000 / (total * 5 + Math.ceil(total / 32) * 11 + 300))));
     // Deliberately use the widest possible counters, even though their sum exceeds an hour.
     const value = { total, scrolled: 1, pages: Array(Math.ceil(total / 32)).fill(4294967295), seconds: Array(total).fill(3600) };
-    const full = snapshot(crypto.randomUUID(), { hours: Array.from({ length: maxHours }, (_, i) => ({ hour: midnight - i * 3600, milliseconds: 3600000, downloads: 10000, pdfAttention: value })) });
+    const full = snapshot(crypto.randomUUID(), { clientDetails: { languages: Array(5).fill("a".repeat(35)), initialViewport: [20000,20000], viewport: [20000,20000], responseMs: 3600000, domMs: 3600000, loadMs: 3600000, pdfRenderMs: 3600000, assessment: "submission_failed", navigation: "back_forward" }, hours: Array.from({ length: maxHours }, (_, i) => ({ hour: midnight - i * 3600, milliseconds: 3600000, downloads: 10000, pdfAttention: value, interactions: { searches: 10000, prints: 10000, outline: 10000, zoom: 10000 } })) });
     assert(Buffer.byteLength(JSON.stringify(full)) < 64512, `${total} pages / ${maxHours} hours`);
   }
 });
@@ -480,10 +480,10 @@ test("history distinguishes missing sessions, missing updates, out-of-period upd
   const { DB, db } = database(), pending = await session(db, DB), tracked = await session(db, DB);
   await saveReading(DB, snapshot(tracked, { milliseconds: 0, downloads: 0, hours: [{ hour: midnight - 3600, milliseconds: 0, downloads: 0 }] }), visitor, now);
   const before = await historyReading(DB, dates("2026-09-16"), false, [pending, tracked]);
-  assert.deepEqual(before.rows.find(row => row.id === pending), { id: pending, botScore: null, botScoreAt: null, readingStatus: "no_updates" });
-  assert.deepEqual(before.rows.find(row => row.id === tracked), { id: tracked, botScore: null, botScoreAt: null, readingStatus: "tracked", readingSeconds: 0, downloads: 0 });
+  assert.deepEqual(before.rows.find(row => row.id === pending), { id: pending, botScore: null, botScoreAt: null, assessmentStatus: "unassessed", readingStatus: "no_updates" });
+  assert.deepEqual(before.rows.find(row => row.id === tracked), { id: tracked, botScore: null, botScoreAt: null, assessmentStatus: "unassessed", readingStatus: "tracked", readingSeconds: 0, downloads: 0 });
   const after = await historyReading(DB, dates("2026-09-17"), false, [tracked]);
-  assert.deepEqual(after.rows[0], { id: tracked, botScore: null, botScoreAt: null, readingStatus: "outside_period" });
+  assert.deepEqual(after.rows[0], { id: tracked, botScore: null, botScoreAt: null, assessmentStatus: "unassessed", readingStatus: "outside_period" });
   const raw = crypto.randomUUID();
   db.prepare("INSERT INTO events(id,occurred_at,kind,path,visitor_hash) VALUES(?,?,'pdf_request',?,?)").run(raw, midnight - 120, PDF, visitor);
   const history = await report(DB, `view=users&user=${visitor.slice(0,24)}&start=2026-09-16&end=2026-09-16`);

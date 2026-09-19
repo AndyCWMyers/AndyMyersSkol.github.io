@@ -117,6 +117,7 @@
       app.eventBus.on("pagerendered", event => {
         if (event.error) { showError("render_error"); return; }
         if (event.cssTransform) return;
+        if (!rendered) window.acwPdfRenderMs = performance.now();
         rendered = true;
         diagnose("rendered");
         void start();

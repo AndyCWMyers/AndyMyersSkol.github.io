@@ -59,7 +59,7 @@ export async function userReport(db, url, dates, personal, excludePersonal, page
   if (user) {
     rows = await db.prepare(`SELECT id, occurred_at AS time, occurred_at < ?1 AS continued, kind,
       CASE WHEN path IN ('/index.html', '/index') THEN '/' ELSE path END AS path,
-      target, country, region, city, county, county_fips, ip_address, browser, device, os,
+      target, country, region, city, county, county_fips, ip_address, browser, device, os, network_asn AS networkAsn, network_org AS networkOwner,
       CASE WHEN referrer_status = 'known' THEN referrer WHEN referrer_status = 'direct' THEN '__direct__' ELSE '__unknown__' END AS referrer,
       source, medium, campaign, inbound_details, ${personal} AS personal
       ${base} AND substr(visitor_hash, 1, 24) = ? ORDER BY occurred_at DESC, rowid DESC LIMIT ? OFFSET ?`)

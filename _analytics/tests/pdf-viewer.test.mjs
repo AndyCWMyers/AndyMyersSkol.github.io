@@ -31,7 +31,7 @@ async function bootstrap({ tracking = true, privacy = {}, cookie = "", visible =
   window.PDFViewerApplicationOptions = { setAll: values => Object.assign(options, values) };
   window.acwStartEngagement = values => { starts.push(values); return { download: () => downloads++, stop() {} }; };
   window.acwInboundDetails = () => inboundDetails(document.referrer, "https://site.example/paper.pdf?utm_content=post&token=secret", "browser");
-  vm.runInNewContext(script, { window, document, navigator: privacy, URL, AbortController,
+  vm.runInNewContext(script, { window, document, navigator: privacy, URL, AbortController, performance: { now: () => 1234 },
     location: { href: "https://site.example/paper.pdf?file=evil.pdf&utm_source=test%3C%3E#page=2&zoom=125" },
     crypto: { randomUUID: () => "pdf-view-id" },
     setTimeout: (fn, ms) => { timers.set(ms, fn); return ms; }, clearTimeout: id => timers.delete(id),
@@ -79,6 +79,7 @@ test("diagnostics report bounded startup/render/error codes, reuse route ID, and
   assert.deepEqual(h.diagnostics.map(row => row.stage), ["started"]);
   h.bus.emit("pagerendered");
   h.bus.emit("pagerendered");
+  assert.equal(h.window.acwPdfRenderMs, 1234);
   assert.deepEqual(h.diagnostics.map(row => row.stage), ["started", "rendered"]);
   assert.equal(JSON.parse(h.requests[0].body).id, diagnosticId);
   h.bus.emit("documenterror", { message: "PRIVATE STACK NOT TO SEND" });

@@ -127,3 +127,21 @@ test("browser assessment loads once, excludes host/privacy and never gates engag
   assert.deepEqual(calls, ["homepage_view", "pdf_view"]);
   assert.deepEqual(posts.map(p => Object.keys(p)), [["url", "id", "token"], ["url", "id", "token"]]);
 });
+
+test("client assessment failure categories contain no token or error text and create no extra posts", async () => {
+  for (const mode of ["script", "execute", "post", "success"]) {
+    const statuses = [], posts = [];
+    const context = vm.createContext({ setTimeout, clearTimeout, allowed: () => true,
+      window: { acwRecaptchaSiteKey: "key", grecaptcha: { ready: callback => callback(), execute: async () => {
+        if (mode === "execute") throw Error("private error"); return token;
+      } } },
+      document: { createElement: () => ({}), head: { appendChild: script => queueMicrotask(() => mode === "script" ? script.onerror() : script.onload()) } },
+      post: async (url, body) => { posts.push({ url, body }); return mode !== "post"; },
+    });
+    vm.runInContext(client + ";this.assess = assessVisit;", context);
+    await context.assess("id", "page_view", value => statuses.push(value));
+    assert.equal(statuses.at(-1), { script: "script_failed", execute: "execution_failed", post: "submission_failed", success: "submitted" }[mode]);
+    assert.equal(posts.length, ["post", "success"].includes(mode) ? 1 : 0);
+    assert.doesNotMatch(JSON.stringify(statuses), /private error|test-token/);
+  }
+});

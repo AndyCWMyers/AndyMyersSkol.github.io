@@ -13,6 +13,8 @@ export const REPORT_PLANS = {
   counties: ["counties", "countyViews"],
   countries: ["countryViews"],
   cities: ["cityViews"],
+  pdf_pages: [],
+  homepage_attention: [],
   sources: ["referrers"],
   devices: ["devices"],
   detail: ["items", "breakdowns", "locationBreakdowns"],

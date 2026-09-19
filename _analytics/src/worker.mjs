@@ -7,7 +7,7 @@ import { userReport } from "./users.mjs";
 import { TIME_ZONE, pacificDate, pacificMidnight, pacificDaily } from "./time.mjs";
 import { estimatedCounty } from "./geography.mjs";
 import { connectingIp } from "./ip.mjs";
-import { QUERY_NAMES, REPORT_PLANS, queryUsage } from "./report-plan.mjs";
+import { QUERY_NAMES, REPORT_PLANS, queryUsage, countryCounts } from "./report-plan.mjs";
 import { headlineSummary } from "./summary.mjs";
 import { startReading, saveReading, readingItems, addReadingItems } from "./engagement.mjs";
 import engagementSource from "./engagement-client.mjs";
@@ -243,7 +243,14 @@ async function report(request, env) {
   const excludePersonal = filter === "1";
   const page = url.searchParams.get("page") || "";
   if (page && (cleanPath(page) !== page || /[\\\u0000-\u0020]/.test(page))) return json({ error: "Invalid page filter" }, 400);
-  const period = `occurred_at >= ? AND occurred_at < ? AND duplicate_of = ''${page ? " AND CASE WHEN path IN ('/index','/index.html') THEN '/' ELSE path END = ?3" : ""}`;
+  const view = url.searchParams.get("view") || "all";
+  // A selected paper's breakdown already has a selective raw-event index.
+  // Whole-tab aggregates use exact hourly memberships instead of event scans.
+  const rollup = view !== "detail" && !page;
+  const eventTable = rollup ? "analytics_activity_hours" : "events";
+  const requestCount = rollup ? "COALESCE(SUM(requests),0)" : "COUNT(*)";
+  const identifiedCount = rollup ? "COALESCE(SUM(CASE WHEN visitor_hash != '' THEN requests ELSE 0 END),0)" : "COUNT(NULLIF(visitor_hash, ''))";
+  const period = `occurred_at >= ? AND occurred_at < ?${rollup ? "" : " AND duplicate_of = ''"}${page ? " AND CASE WHEN path IN ('/index','/index.html') THEN '/' ELSE path END = ?3" : ""}`;
   const personal = "(is_personal = 1 OR visitor_hash IN (SELECT visitor_hash FROM personal_visitors))";
   const where = `${period}${excludePersonal ? ` AND NOT ${personal}` : ""}`;
   if (url.searchParams.get("view") === "pdf_diagnostics") {
@@ -257,7 +264,6 @@ async function report(request, env) {
     const value = await userReport(env.DB, url, dates, personal, excludePersonal, page);
     return json(value, value.error ? 400 : 200);
   }
-  const view = url.searchParams.get("view") || "all";
   if (!Object.hasOwn(REPORT_PLANS, view)) return json({ error: "Invalid report view" }, 400);
   if (view === "pdf_pages" || view === "homepage_attention") {
     const name = url.searchParams.get("name") || "";
@@ -290,10 +296,10 @@ async function report(request, env) {
   const activity = (materialized = false) => `WITH activity AS ${materialized ? "MATERIALIZED " : ""}(
     SELECT *, CASE WHEN kind = 'outbound_click' THEN 'outbound' ELSE 'main' END AS section,
       CASE WHEN kind = 'outbound_click' THEN target WHEN path IN ('/index.html', '/index') THEN '/' ELSE path END AS name
-    FROM events WHERE ${where} AND bot = 0 AND kind IN ('page_view', 'pdf_request', 'outbound_click')${itemFilter}${detailFilter}
+    FROM ${eventTable} WHERE ${where} AND bot = 0 AND kind IN ('page_view', 'pdf_request', 'outbound_click')${itemFilter}${detailFilter}
   )`;
-  const counts = `COUNT(*) AS count, COUNT(DISTINCT NULLIF(visitor_hash, '')) AS visitors,
-    COUNT(NULLIF(visitor_hash, '')) AS identifiedRequests, COUNT(*) - COUNT(NULLIF(visitor_hash, '')) AS unidentifiedRequests`;
+  const counts = `${requestCount} AS count, COUNT(DISTINCT NULLIF(visitor_hash, '')) AS visitors,
+    ${identifiedCount} AS identifiedRequests, ${requestCount} - ${identifiedCount} AS unidentifiedRequests`;
   const inboundSource = "CASE WHEN referrer_status = 'known' THEN referrer WHEN referrer_status = 'direct' THEN '__direct__' ELSE '__unknown__' END";
   // Fixed dimensions stay scoped to each destination.
   const dimensions = [
@@ -306,24 +312,24 @@ async function report(request, env) {
     GROUP BY section, name, ${value}, ${detail}`).join(" UNION ALL ");
   // Fixed aggregate queries; user histories use the private view above.
   const queries = [
-    query(`SELECT kind, bot, ${counts} FROM events WHERE ${where} GROUP BY kind, bot`),
-    query(`SELECT strftime('%Y-%m-%dT%H:00:00Z', occurred_at, 'unixepoch') AS hour, kind, COUNT(*) AS count FROM events WHERE ${where} AND bot = 0 GROUP BY hour, kind ORDER BY hour`),
-    query(`SELECT CASE WHEN kind = 'pdf_click' THEN target ELSE path END AS name, kind, COUNT(*) AS count FROM events WHERE ${where} AND bot = 0 AND kind IN ('pdf_request','pdf_click','page_view') GROUP BY name, kind ORDER BY count DESC LIMIT 100`),
-    query(`SELECT target AS name, COUNT(*) AS count FROM events WHERE ${where} AND bot = 0 AND kind = 'outbound_click' GROUP BY target ORDER BY count DESC LIMIT 100`),
-    query(`SELECT country AS name, kind, COUNT(*) AS count FROM events WHERE ${where} AND bot = 0 AND kind IN ('page_view','pdf_request','outbound_click') GROUP BY country, kind ORDER BY count DESC`),
-    query(`SELECT ${inboundSource} AS name, kind, COUNT(*) AS count FROM events WHERE ${where} AND bot = 0 AND kind IN ('page_view','pdf_request','outbound_click') GROUP BY name, kind ORDER BY count DESC`),
-    query(`SELECT browser AS name, device, os, kind, COUNT(*) AS count FROM events WHERE ${where} AND bot = 0 AND kind IN ('page_view','pdf_request','outbound_click') GROUP BY browser, device, os, kind ORDER BY count DESC`),
-    query(`SELECT source, medium, campaign, COUNT(*) AS count FROM events WHERE ${where} AND bot = 0 AND source != '' GROUP BY source, medium, campaign ORDER BY count DESC LIMIT 100`),
-    query(`SELECT COUNT(DISTINCT NULLIF(visitor_hash, '')) AS visitors, COUNT(NULLIF(visitor_hash, '')) AS identifiedRequests, COUNT(*) - COUNT(NULLIF(visitor_hash, '')) AS unidentifiedRequests FROM events WHERE ${where} AND bot = 0 AND kind = 'pdf_request'`),
-    query(`SELECT path AS name, COUNT(DISTINCT NULLIF(visitor_hash, '')) AS visitors, COUNT(NULLIF(visitor_hash, '')) AS identifiedRequests, COUNT(*) - COUNT(NULLIF(visitor_hash, '')) AS unidentifiedRequests FROM events WHERE ${where} AND bot = 0 AND kind = 'pdf_request' GROUP BY path ORDER BY COUNT(*) DESC LIMIT 100`),
+    query(`SELECT kind, bot, ${counts} FROM ${eventTable} WHERE ${where} GROUP BY kind, bot`),
+    query(`SELECT strftime('%Y-%m-%dT%H:00:00Z', occurred_at, 'unixepoch') AS hour, kind, ${requestCount} AS count FROM ${eventTable} WHERE ${where} AND bot = 0 GROUP BY hour, kind ORDER BY hour`),
+    query(`SELECT CASE WHEN kind = 'pdf_click' THEN target ELSE path END AS name, kind, ${requestCount} AS count FROM ${eventTable} WHERE ${where} AND bot = 0 AND kind IN ('pdf_request','pdf_click','page_view') GROUP BY name, kind ORDER BY count DESC LIMIT 100`),
+    query(`SELECT target AS name, ${requestCount} AS count FROM ${eventTable} WHERE ${where} AND bot = 0 AND kind = 'outbound_click' GROUP BY target ORDER BY count DESC LIMIT 100`),
+    query(`SELECT country AS name, kind, ${requestCount} AS count FROM ${eventTable} WHERE ${where} AND bot = 0 AND kind IN ('page_view','pdf_request','outbound_click') GROUP BY country, kind ORDER BY count DESC`),
+    query(`SELECT ${inboundSource} AS name, kind, ${requestCount} AS count FROM ${eventTable} WHERE ${where} AND bot = 0 AND kind IN ('page_view','pdf_request','outbound_click') GROUP BY name, kind ORDER BY count DESC`),
+    query(`SELECT browser AS name, device, os, kind, ${requestCount} AS count FROM ${eventTable} WHERE ${where} AND bot = 0 AND kind IN ('page_view','pdf_request','outbound_click') GROUP BY browser, device, os, kind ORDER BY count DESC`),
+    query(`SELECT source, medium, campaign, ${requestCount} AS count FROM ${eventTable} WHERE ${where} AND bot = 0 AND source != '' GROUP BY source, medium, campaign ORDER BY count DESC LIMIT 100`),
+    query(`SELECT COUNT(DISTINCT NULLIF(visitor_hash, '')) AS visitors, ${identifiedCount} AS identifiedRequests, ${requestCount} - ${identifiedCount} AS unidentifiedRequests FROM ${eventTable} WHERE ${where} AND bot = 0 AND kind = 'pdf_request'`),
+    query(`SELECT path AS name, COUNT(DISTINCT NULLIF(visitor_hash, '')) AS visitors, ${identifiedCount} AS identifiedRequests, ${requestCount} - ${identifiedCount} AS unidentifiedRequests FROM ${eventTable} WHERE ${where} AND bot = 0 AND kind = 'pdf_request' GROUP BY path ORDER BY ${requestCount} DESC LIMIT 100`),
     query(`${activity()} SELECT section, name, ${counts} FROM activity GROUP BY section, name ORDER BY count DESC`),
     query(`${activity(true)}, breakdowns AS (${breakdowns}), ranked AS (
       SELECT *, ROW_NUMBER() OVER (PARTITION BY section, name, dimension ORDER BY count DESC, value, detail) AS rank FROM breakdowns
     ) SELECT section, name, dimension, value, detail, count, visitors, identifiedRequests, unidentifiedRequests FROM ranked WHERE rank <= 50 ORDER BY section, name, dimension, rank`),
-    query(`SELECT COUNT(*) AS events FROM events WHERE ${period} AND bot = 0 AND kind IN ('page_view', 'pdf_request', 'outbound_click') AND ${personal}`),
-    query(`SELECT region AS name, ${counts} FROM events WHERE ${where} AND bot = 0 AND country = 'US' AND kind IN ('page_view','pdf_request') GROUP BY region ORDER BY count DESC`),
-    query(`SELECT county_fips AS name, county, region, kind, COUNT(*) AS count FROM events WHERE ${where} AND bot = 0 AND country IN ('US','PR') AND kind IN ('page_view','pdf_request','outbound_click') GROUP BY county_fips, county, region, kind ORDER BY count DESC`),
-    query(`SELECT county_fips AS name, county, region, ${counts} FROM events WHERE ${where} AND bot = 0 AND country IN ('US','PR') AND kind IN ('page_view','pdf_request') GROUP BY county_fips, county, region ORDER BY count DESC`),
+    query(`SELECT COALESCE(${requestCount},0) AS events FROM ${eventTable} WHERE ${period} AND bot = 0 AND kind IN ('page_view', 'pdf_request', 'outbound_click') AND ${personal}`),
+    query(`SELECT region AS name, ${counts} FROM ${eventTable} WHERE ${where} AND bot = 0 AND country = 'US' AND kind IN ('page_view','pdf_request') GROUP BY region ORDER BY count DESC`),
+    query(`SELECT county_fips AS name, county, region, kind, ${requestCount} AS count FROM ${eventTable} WHERE ${where} AND bot = 0 AND country IN ('US','PR') AND kind IN ('page_view','pdf_request','outbound_click') GROUP BY county_fips, county, region, kind ORDER BY count DESC`),
+    query(`SELECT county_fips AS name, county, region, ${counts} FROM ${eventTable} WHERE ${where} AND bot = 0 AND country IN ('US','PR') AND kind IN ('page_view','pdf_request') GROUP BY county_fips, county, region ORDER BY count DESC`),
     // D1 permits only five compound SELECT terms; finer geography stays separate.
     query(`${activity(true)}, location_counts AS (
       SELECT section, name, 'counties' AS dimension, county AS value, region AS detail, ${counts}
@@ -337,9 +343,9 @@ async function report(request, env) {
     ), ranked AS (
       SELECT *, ROW_NUMBER() OVER (PARTITION BY section, name, dimension ORDER BY count DESC, value, detail) AS rank FROM location_counts
     ) SELECT section, name, dimension, value, detail, count, visitors, identifiedRequests, unidentifiedRequests FROM ranked WHERE dimension = 'countries' OR rank <= 50 ORDER BY section, name, rank`),
-    query(`SELECT city AS name, country, region, kind, COUNT(*) AS count FROM events WHERE ${where} AND bot = 0 AND kind IN ('page_view','pdf_request','outbound_click') GROUP BY city, country, region, kind ORDER BY count DESC`),
-    query(`SELECT country AS name, ${counts} FROM events WHERE ${where} AND bot = 0 AND kind IN ('page_view','pdf_request') GROUP BY country ORDER BY count DESC`),
-    query(`SELECT city AS name, country, region, ${counts} FROM events WHERE ${where} AND bot = 0 AND kind IN ('page_view','pdf_request') GROUP BY city, country, region ORDER BY count DESC, country, region, city`),
+    query(`SELECT city AS name, country, region, kind, ${requestCount} AS count FROM ${eventTable} WHERE ${where} AND bot = 0 AND kind IN ('page_view','pdf_request','outbound_click') GROUP BY city, country, region, kind ORDER BY count DESC`),
+    query(`SELECT country AS name, ${counts} FROM ${eventTable} WHERE ${where} AND bot = 0 AND kind IN ('page_view','pdf_request') GROUP BY country ORDER BY count DESC`),
+    query(`SELECT city AS name, country, region, ${counts} FROM ${eventTable} WHERE ${where} AND bot = 0 AND kind IN ('page_view','pdf_request') GROUP BY city, country, region ORDER BY count DESC, country, region, city`),
   ];
   const selected = queries.map((entry, index) => ({ ...entry, index, name: QUERY_NAMES[index] }))
     .filter(entry => REPORT_PLANS[view].includes(entry.name));
@@ -347,6 +353,7 @@ async function report(request, env) {
   const measuredQueries = selected.map((entry, index) => [entry.name, executed[index]]);
   const results = queries.map(() => ({ results: [] }));
   selected.forEach((entry, index) => { results[entry.index] = executed[index]; });
+  if (view === "geography") results[4].results = countryCounts(results[17].results);
   let engagement;
   if (["all", "summary", "overview", "papers"].includes(view) || (view === "detail" && section === "main")) {
     const reading = await readingItems(env.DB, dates, excludePersonal, view === "detail" ? name : page);
@@ -372,6 +379,7 @@ async function report(request, env) {
       "Distinct visitors are estimated browsers, not identified people, using a random 30-day cookie. Only its hash is stored in D1. Old requests have no visitor identifier and cannot be deduplicated.",
       "Marked personal activity can be filtered from all report aggregates. Privacy opt-outs are never recorded. IP addresses are retained privately and shown only in authenticated user profiles; no fingerprints are created."] };
   const fields = new Set(["generatedAt", "timeZone", "start", "end", "excludePersonal", "page", "engagement", "documents", "gaPropertyId", "gaMeasurementId", "gaPdfForwarding", ...REPORT_PLANS[view]]);
+  if (view === "geography") fields.add("countries");
   return json({ ...(view === "all" ? value : Object.fromEntries(Object.entries(value).filter(([key]) => fields.has(key)))),
     view, ...(view === "detail" ? { section, name } : {}),
     queryUsage: queryUsage(measuredQueries) });

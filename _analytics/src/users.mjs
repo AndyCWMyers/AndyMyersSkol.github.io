@@ -51,10 +51,11 @@ export async function userReport(db, url, dates, personal, excludePersonal, page
   // The prefix condition uses the existing profile index; full hashes retain exact membership.
   const liveFilter = live ? `AND substr(visitor_hash, 1, 24) IN (SELECT substr(value, 1, 24) FROM json_each(?${params.length}))
     AND visitor_hash IN (SELECT value FROM json_each(?${params.length}))` : "";
-  const base = `FROM events WHERE ((occurred_at >= ?1 AND occurred_at < ?2)
-      OR id IN (SELECT session_id FROM reading_hours WHERE hour >= ?1 AND hour < ?2))
-    AND duplicate_of = '' ${excludePersonal ? `AND NOT ${personal}` : ""}
-    AND bot = 0 AND visitor_hash != '' AND kind IN ('page_view', 'pdf_request', 'outbound_click') ${cohort} ${liveFilter}`;
+  const filters = `duplicate_of = '' ${excludePersonal ? `AND NOT ${personal}` : ""}
+    AND bot = 0 AND visitor_hash != '' AND kind IN ('page_view', 'pdf_request', 'outbound_click')`;
+  const continued = "id IN (SELECT session_id FROM reading_hours WHERE hour >= ?1 AND hour < ?2)";
+  const eligible = `FROM events WHERE ((occurred_at >= ?1 AND occurred_at < ?2) OR ${continued}) AND ${filters}`;
+  const base = `${eligible} ${cohort} ${liveFilter}`;
   let rows, addresses = [], unrecordedIpEvents = 0, diagnostics, diagnosticsMore = false, diagnosticsUnavailable = false;
   if (user) {
     rows = await db.prepare(`SELECT id, occurred_at AS time, occurred_at < ?1 AS continued, kind,
@@ -79,20 +80,28 @@ export async function userReport(db, url, dates, personal, excludePersonal, page
       measured.push(diagnosticReport.measured);
     } catch { diagnosticsUnavailable = true; }
   } else {
-    rows = await db.prepare(`WITH activity AS (
-      SELECT visitor_hash, occurred_at, kind, path, country, region, city, county, county_fips, browser, device, os,
-        ${personal} AS personal, ROW_NUMBER() OVER (PARTITION BY visitor_hash ORDER BY occurred_at DESC, rowid DESC) AS recent ${base}
-    ) SELECT substr(visitor_hash, 1, 24) AS id, COUNT(*) AS events,
+    // Aggregate narrow counters first. Resolve the latest metadata only for the
+    // 16 selected users, not with a window sort over every historical event.
+    rows = await db.prepare(`WITH candidates AS (
+      SELECT visitor_hash, occurred_at, kind, is_personal FROM events
+        WHERE occurred_at >= ?1 AND occurred_at < ?2 AND ${filters} ${cohort} ${liveFilter}
+      UNION ALL
+      SELECT visitor_hash, occurred_at, kind, is_personal FROM events
+        WHERE (occurred_at < ?1 OR occurred_at >= ?2) AND ${continued} AND ${filters} ${cohort} ${liveFilter}
+    ), selected AS MATERIALIZED (
+      SELECT visitor_hash, COUNT(*) AS events,
       SUM(kind != 'outbound_click' AND occurred_at >= ?1 AND occurred_at < ?2) AS views, SUM(kind = 'outbound_click') AS clicks,
       SUM(kind = 'pdf_request') AS pdfViews,
-      MIN(occurred_at) AS firstSeen, MAX(occurred_at) AS lastSeen, MAX(personal) AS personal,
-      MAX(CASE WHEN recent = 1 THEN CASE WHEN path IN ('/index','/index.html') THEN '/' ELSE path END END) AS lastPath,
-      MAX(CASE WHEN recent = 1 THEN country END) AS country, MAX(CASE WHEN recent = 1 THEN region END) AS region,
-      MAX(CASE WHEN recent = 1 THEN city END) AS city,
-      MAX(CASE WHEN recent = 1 THEN county END) AS county, MAX(CASE WHEN recent = 1 THEN county_fips END) AS county_fips,
-      MAX(CASE WHEN recent = 1 THEN browser END) AS browser, MAX(CASE WHEN recent = 1 THEN device END) AS device,
-      MAX(CASE WHEN recent = 1 THEN os END) AS os
-      FROM activity GROUP BY visitor_hash ORDER BY lastSeen DESC, id LIMIT ? OFFSET ?`)
+      MIN(occurred_at) AS firstSeen, MAX(occurred_at) AS lastSeen, MAX(${personal}) AS personal
+      FROM candidates GROUP BY visitor_hash ORDER BY lastSeen DESC, substr(visitor_hash,1,24) LIMIT ? OFFSET ?
+    ) SELECT substr(s.visitor_hash,1,24) AS id, s.events, s.views, s.clicks, s.pdfViews,
+      s.firstSeen, s.lastSeen, s.personal,
+      CASE WHEN e.path IN ('/index','/index.html') THEN '/' ELSE e.path END AS lastPath,
+      e.country, e.region, e.city, e.county, e.county_fips, e.browser, e.device, e.os
+      FROM selected s JOIN events e ON e.rowid = (
+        SELECT rowid ${eligible} AND substr(visitor_hash,1,24) = substr(s.visitor_hash,1,24)
+          AND visitor_hash = s.visitor_hash AND occurred_at = s.lastSeen ORDER BY rowid DESC LIMIT 1
+      ) ORDER BY s.lastSeen DESC, id`)
       .bind(...params, limit + 1, offset).all();
     measured.push(["users", rows]);
   }

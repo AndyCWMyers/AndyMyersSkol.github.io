@@ -395,8 +395,53 @@ updates and deletes keep both summaries consistent, excluding flagged duplicates
 This trades up to two additional summary-row writes per counted event for cheaper
 headline reads. Exact distinct counts still read compact visitor memberships and
 can approach one membership per view when every visitor is new; they are not a
-constant-cost counter. Other tabs and explicit full-report exports retain their
-existing event queries. The summaries can be checked against `view=all`.
+constant-cost counter.
+
+Migrations `0022_activity_rollups.sql` and `0023_report_indexes.sql` add exact
+hourly activity memberships for the other aggregate tabs and full-report exports.
+They preserve each report dimension and full visitor hash; request counters are
+summed, but distinct visitors are deduplicated across the entire selection. The
+table is maintained atomically on event insert, correction and deletion. Raw
+events, IPs, diagnostics and reading measurements remain intact. A covering
+kind/time index skips irrelevant event kinds and bots. A single-page filter or
+paper detail keeps the existing selective raw page/time index instead.
+Geography derives country request totals from its city request groups, avoiding
+a second query. Country/city distinct-user maps still use membership queries.
+
+User lists split in-period events from disjoint continued-session events, scan
+indexed counters, then fetch latest metadata only for the selected page of users.
+Timestamp ties retain the original rowid ordering. Histories, pagination, live
+status, page cohorts, unknown identities, personal filters and reading sessions
+crossing period boundaries retain their existing semantics. No user-history or
+IP results are added to caches. Overview and Papers & CV share the same one-minute
+aggregate cache, with unchanged filter keys and explicit refresh behavior.
+
+These changes add one summary-row write and applicable index maintenance per
+counted event, but no additional reading-heartbeat writes or requests. Exact
+distinct counts and user pagination still scale with the relevant memberships;
+they are not constant-time queries. On the September 18 snapshot, 588 before/after
+reports matched, including all existing profiles. Tests also cover 10,000 repeated
+views, corrections, deletion, personal reclassification and both DST transitions.
+Backfill never rewrites raw events. Apply both migrations before publishing this
+Worker; rolling back the Worker is safe with the additive tables/indexes retained.
+
+Live D1 comparison for August 20 through September 18, excluding personal activity:
+
+| Report | Before rows read | After rows read |
+| --- | ---: | ---: |
+| Papers & CV | 1,159 | 686 |
+| Users, first page | 2,060 | 1,035 |
+| Users, second page | 2,061 | 1,036 |
+| Geography table | 1,880 | 496 |
+| State map | 817 | 344 |
+| Inbound sources | 902 | 434 |
+| Browsers | 915 | 447 |
+| One-paper filter | 221 | 221 |
+
+The already summarized headline remained at 1,121 reads. These are measured
+uncached executions, not a fixed per-request allowance; future traffic and filters
+change the cost. Switching between Overview and Papers & CV within the existing
+cache lifetime also avoids a second aggregate execution entirely.
 
 Authenticated responses include `queryUsage` with named query counts, rows read,
 rows written and duration from D1 metadata (null when unavailable). No SQL, tokens,

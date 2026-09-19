@@ -28,6 +28,8 @@ function database(includeHistoryIndex = true) {
   db.exec(readFileSync(new URL("../migrations/0016_recaptcha_scores.sql", import.meta.url), "utf8"));
   db.exec(readFileSync(new URL("../migrations/0017_inbound_details.sql", import.meta.url), "utf8"));
   db.exec(readFileSync(new URL("../migrations/0018_visit_details.sql", import.meta.url), "utf8"));
+  db.exec(readFileSync(new URL("../migrations/0022_activity_rollups.sql", import.meta.url), "utf8"));
+  db.exec(readFileSync(new URL("../migrations/0023_report_indexes.sql", import.meta.url), "utf8"));
   const prepare = (sql) => { assert.ok((sql.match(/UNION ALL/g) || []).length < 5, "D1 compound SELECT limit"); return ({ bind: (...params) => ({
     run: async () => db.prepare(sql).run(...params),
     all: async () => ({ results: db.prepare(sql).all(...params) }),
@@ -288,9 +290,10 @@ test("lazy report plans preserve full-report values while skipping unopened tabs
       geography: ["countries", "cities"], sources: ["referrers"], devices: ["devices"], states: ["states"], counties: ["counties", "countyViews"], countries: ["countryViews"], cities: ["cityViews"] };
     for (const [view, fields] of Object.entries(plans)) {
       const part = await get(view, { excludePersonal });
-      assert.equal(calls.at(-1), fields.length, view);
-      assert.equal(part.queryUsage.queryCount, fields.length + (["summary", "overview", "papers"].includes(view) ? 1 : 0));
-      assert.equal(part.queryUsage.rowsRead, ["summary", "overview", "papers"].includes(view) ? null : fields.length * 10);
+      const queryCount = view === "geography" ? 1 : fields.length;
+      assert.equal(calls.at(-1), queryCount, view);
+      assert.equal(part.queryUsage.queryCount, queryCount + (["summary", "overview", "papers"].includes(view) ? 1 : 0));
+      assert.equal(part.queryUsage.rowsRead, ["summary", "overview", "papers"].includes(view) ? null : queryCount * 10);
       assert.equal(part.breakdowns, undefined);
       for (const field of fields) assert.deepEqual(part[field], field === "items" ? full.items.filter(row => row.section === (view === "outbound" ? "outbound" : "main")) : full[field], `${view}:${field}`);
     }
@@ -351,6 +354,6 @@ test("profile index preserves records and is used by both history and IP queries
   assert.equal(value.queryUsage.queryCount, 6);
   assert.equal(plans.length, 6);
   assert.ok(plans.slice(0, 2).every(plan => plan.some(row => row.detail.includes("events_user_history"))));
-  assert.ok(plans[2].some(row => row.detail.includes("events_time")));
+  assert.ok(plans[2].some(row => row.detail.includes("events_activity_time")));
   assert.ok(plans[2].some(row => row.detail.includes("reading_live")));
 });

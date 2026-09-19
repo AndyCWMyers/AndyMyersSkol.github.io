@@ -113,7 +113,9 @@ export async function userReport(db, url, dates, personal, excludePersonal, page
     const history = await historyReading(db, dates, excludePersonal, visible.map(row => row.id));
     measured.push(...history.measured);
     const byId = new Map(history.rows.map(row => [row.id, row]));
+    const clients = new Map((diagnostics || []).map(row => [row.id, row.automatedClient]));
     for (const row of visible) {
+      row.automatedClient = clients.get(row.id) || "";
       row.inbound = parseInbound(row.inbound_details);
       delete row.inbound_details;
       if (byId.has(row.id)) Object.assign(row, byId.get(row.id));

@@ -5,6 +5,8 @@ import { readFileSync, readdirSync } from "node:fs";
 import worker from "../src/worker.mjs";
 import { pdfNavigationReason } from "../src/pdf-viewer.mjs";
 import { validDiagnosticSignal } from "../src/pdf-diagnostics.mjs";
+import { automatedClient } from "../src/automated-client.mjs";
+import { viewerDocuments as documents } from "../src/documents.mjs";
 
 const ORIGIN = "https://www.andrewcwmyers.com", PDF = "/andrew_c_w_myers_CV.pdf";
 const SECRET = "a-private-test-only-token-32-characters";
@@ -43,7 +45,7 @@ test("viewer diagnostics are linked, private, bounded and separate from view tot
   assert.equal(row.user_agent.length, 512);
   assert.doesNotMatch(JSON.stringify(row), /never-save|secret=hidden|__Host-acw/);
   assert.equal(h.db.prepare("SELECT COUNT(*) AS n FROM events").get().n, 0);
-  for (const stage of ["started", "rendered", "error"]) {
+  for (const stage of ["started", "initialized", "loaded", "rendered", "error"]) {
     const body = { id: v.id, stage, code: "document_error", status: 0 };
     assert.equal((await h.fetch("/__analytics/pdf-diagnostic", post(body, v.cookie))).status, 204);
     const first = h.db.prepare("SELECT * FROM pdf_diagnostics").get();
@@ -51,7 +53,7 @@ test("viewer diagnostics are linked, private, bounded and separate from view tot
     assert.deepEqual(h.db.prepare("SELECT * FROM pdf_diagnostics").get(), first);
   }
   row = h.db.prepare("SELECT * FROM pdf_diagnostics").get();
-  assert(row.started_at && row.rendered_at && row.error_at);
+  assert(row.started_at && row.initialized_at && row.loaded_at && row.rendered_at && row.error_at);
   assert.equal(h.db.prepare("SELECT COUNT(*) AS n FROM events").get().n, 0);
   const day = today(), path = `/__analytics/report?view=pdf_diagnostics&start=${day}&end=${day}&excludePersonal=0`;
   assert.equal((await h.fetch(path)).status, 401);
@@ -96,7 +98,35 @@ test("diagnostics enforce origin, ownership, privacy, validation and independent
   assert.equal((await limited.fetch(PDF, { headers: { Accept: "text/html" } })).status, 200);
   assert.equal(limited.db.prepare("SELECT COUNT(*) AS n FROM pdf_diagnostics").get().n, 0);
   assert.equal((await limited.fetch("/__analytics/pdf-diagnostic", post(body, v.cookie))).status, 429);
-  for (const code of ["document_error", "render_error", "initialization_error", "script_error", "tracking_http", "tracking_network", "engagement_start_error"]) assert(validDiagnosticSignal({ ...body, stage: "error", code, status: 503 }));
+  for (const code of ["document_error", "render_error", "initialization_error", "script_error", "runtime_error", "promise_error", "startup_timeout", "tracking_http", "tracking_network", "engagement_start_error"]) assert(validDiagnosticSignal({ ...body, stage: "error", code, status: 503 }));
+});
+
+test("all catalog PDFs including appendices and older papers render and accept tracking", async () => {
+  assert.equal(new Set(documents.map(row => row.name)).size, documents.length);
+  for (const doc of documents.filter(row => row.name.endsWith(".pdf"))) {
+    const h = setup();
+    const response = await h.fetch(doc.name, { headers: { Accept: "text/html" } });
+    assert.match(response.headers.get("Content-Type"), /text\/html/);
+    const id = (await response.text()).match(/acw-pdf-diagnostic" content="([^"]*)"/)[1];
+    const cookie = response.headers.get("Set-Cookie").split(";")[0];
+    assert.equal((await h.fetch("/__analytics/event", post({ id, kind: "pdf_view", path: doc.name }, cookie))).status, 204);
+    assert.equal(h.db.prepare("SELECT COUNT(*) AS n FROM reading_sessions").get().n, 1);
+  }
+});
+
+test("self-identified automation gets raw bytes and a report label without reclassifying counts", async () => {
+  for (const agent of ["MistralFrozenResearch/1.0", "Claude-User (claude-code/2)", "grok-search-verify/1.10", "Docoloc"]) {
+    const h = setup();
+    const response = await h.fetch(PDF, { headers: { Accept: "text/html", "User-Agent": agent } });
+    assert.equal(response.headers.get("Content-Type"), "application/pdf");
+    const row = h.db.prepare("SELECT * FROM pdf_diagnostics").get();
+    assert.equal(row.reason, "automated_client");
+    assert.equal(row.bot, 0, "labels do not silently change the historical bot/count policy");
+    const day = today();
+    const report = await (await h.fetch(`/__analytics/report?view=pdf_diagnostics&start=${day}&end=${day}`, { headers: { Authorization: `Bearer ${SECRET}` } })).json();
+    assert.equal(report.rows[0].automatedClient, automatedClient(agent));
+  }
+  for (const agent of ["", "Mozilla/5.0 Chrome/124.0", "Safari/604.1"]) assert.equal(automatedClient(agent), "");
 });
 
 test("personal diagnostic rows are filterable without exposing other user profiles", async () => {

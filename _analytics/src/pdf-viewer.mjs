@@ -1,5 +1,5 @@
 import viewerHTML from "./pdf-viewer-template.mjs";
-import documents from "./documents.mjs";
+import { viewerDocuments as documents } from "./documents.mjs";
 
 export function isPdfNavigation(request) {
   return pdfNavigationReason(request) === "viewer";
@@ -48,6 +48,7 @@ export function pdfViewerResponse(path, measurementId, trackingEnabled = true, d
     <meta name="acw-pdf-title" content="${escapeAttribute(title)}" />
     <meta name="acw-tracking" content="${trackingEnabled ? "true" : "false"}" />
     <meta name="acw-pdf-diagnostic" content="${trackingEnabled ? diagnosticId : ""}" />
+    <script src="acw-diagnostics.js"></script>
     ${trackingEnabled ? '<script src="/__analytics/engagement.js"></script>' : ""}
     <script src="acw-viewer.js"></script>`;
   const html = viewerHTML

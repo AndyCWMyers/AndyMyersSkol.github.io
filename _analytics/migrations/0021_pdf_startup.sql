@@ -1,0 +1,2 @@
+ALTER TABLE pdf_diagnostics ADD COLUMN initialized_at INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE pdf_diagnostics ADD COLUMN loaded_at INTEGER NOT NULL DEFAULT 0;

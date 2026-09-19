@@ -7,7 +7,6 @@
   const rawURL = path + "?__pdf=raw";
   const diagnosticValue = document.querySelector('meta[name="acw-pdf-diagnostic"]')?.content || "";
   const diagnosticId = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(diagnosticValue) ? diagnosticValue : "";
-  const diagnosticStages = new Set();
   let rendered = false, starting = false, tracker = null;
   const queuedDownloads = [];
   let attempts = 0, retryTimer, id;
@@ -19,19 +18,7 @@
   }
 
   function diagnose(stage, code = "", status = 0) {
-    if (!diagnosticId || !allowed() || diagnosticStages.has(stage)) return;
-    diagnosticStages.add(stage);
-    const send = async (attempt = 0) => {
-      if (!allowed()) return;
-      try {
-        const response = await fetch("/__analytics/pdf-diagnostic", { method: "POST", credentials: "same-origin",
-          headers: { "Content-Type": "text/plain" }, keepalive: true,
-          body: JSON.stringify({ id: diagnosticId, stage, code, status }) });
-        // The server's non-blocking route insert may still be finishing.
-        if ((response.status === 404 || response.status >= 500) && attempt < 2) setTimeout(() => send(attempt + 1), 1000 * (attempt + 1));
-      } catch { if (attempt < 2) setTimeout(() => send(attempt + 1), 1000 * (attempt + 1)); }
-    };
-    void send();
+    window.acwPdfDiagnostic?.signal(stage, code, status);
   }
 
   async function start() {
@@ -114,11 +101,15 @@
       sandboxBundleSrc: "/__pdfjs/build/pdf.sandbox.mjs",
     });
     app.initializedPromise.then(() => {
+      diagnose("initialized");
+      app.eventBus.on("documentloaded", () => diagnose("loaded"));
       app.eventBus.on("pagerendered", event => {
         if (event.error) { showError("render_error"); return; }
         if (event.cssTransform) return;
         if (!rendered) window.acwPdfRenderMs = performance.now();
         rendered = true;
+        const message = document.querySelector("#acwPdfError");
+        if (message) message.hidden = true;
         diagnose("rendered");
         void start();
       });

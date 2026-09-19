@@ -49,7 +49,7 @@ focus changes, and BFCache. The Worker creates the view row and engagement
 session with that same ID. No synthetic GA page view is emitted by the viewer.
 The ID comes from the server's diagnostic meta tag when present, otherwise a
 fresh random UUID. Diagnostic requests to `/__analytics/pdf-diagnostic` report
-startup, rendering, and at most one fixed error code. They require the matching
+startup, initialization, document loading, rendering, and at most one fixed error code. They require the matching
 visitor cookie, respect privacy opt-outs, and never create view events. The
 separate diagnostic row records the routing decision even without JavaScript.
 Private history reports distinguish `untracked` (no session), `no_updates`
@@ -136,6 +136,14 @@ PDF.js features using native icons and localization.
 JavaScript-disabled browsers get a concise `Open original PDF` link. Document,
 page-render, and module-load failures expose the same raw-PDF link in an
 error-only notice; normal viewing has no added notice.
+
+`acw-diagnostics.js` loads before the engagement script and viewer modules. It
+also catches local runtime/rejection failures and a bounded visible-time startup
+timeout; never transmit exception text or stacks. The legacy distribution supplies
+polyfills while retaining the same viewer UI and controls. Public appendices and
+older PDFs are covered by `viewerDocuments` without adding zero-view entries to the
+main paper catalog. Self-identified automation keeps raw access and receives a
+self-reported client label, never a classification inferred from absent telemetry.
 
 ## Verification
 

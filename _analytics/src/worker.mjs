@@ -2,7 +2,7 @@ import clientSource from "./client.mjs";
 import { inboundDetails } from "./inbound.mjs";
 import { pdfIdentity, pdfCookie, sendPdfEvent } from "./ga.mjs";
 import { excludedBrowser, personalBrowser, preferences, visitorIdentity, visitorHash } from "./preferences.mjs";
-import documents from "./documents.mjs";
+import documents, { viewerDocuments } from "./documents.mjs";
 import { userReport } from "./users.mjs";
 import { TIME_ZONE, pacificDate, pacificMidnight, pacificDaily } from "./time.mjs";
 import { estimatedCounty } from "./geography.mjs";
@@ -17,6 +17,7 @@ import { assessVisit } from "./recaptcha.mjs";
 import { recordPdfDiagnostic, validDiagnosticSignal, updatePdfDiagnostic, pdfDiagnostics } from "./pdf-diagnostics.mjs";
 import { pdfPageReport } from "./pdf-page-report.mjs";
 import { homepageReport } from "./homepage-report.mjs";
+import { automatedClient } from "./automated-client.mjs";
 
 // Configuration and bounded, privacy-preserving normalization.
 const HOSTS = new Set(["www.andrewcwmyers.com", "andrewcwmyers.com"]);
@@ -175,7 +176,7 @@ async function collect(request, env, ctx) {
   if (!KINDS.has(body.kind) || !path || !/^[\da-f-]{36}$/i.test(body.id || "")) return json({ error: "Invalid event" }, 400);
   const target = body.kind === "outbound_click" ? cleanUrl(body.target) : body.kind === "pdf_click" ? cleanPath(body.target) : "";
   if (["outbound_click", "pdf_click"].includes(body.kind) && !target) return json({ error: "Invalid target" }, 400);
-  if (body.kind === "pdf_view" && (!/\.pdf$/i.test(path) || !documents.some(document => document.name === path))) return json({ error: "Invalid document" }, 400);
+  if (body.kind === "pdf_view" && (!/\.pdf$/i.test(path) || !viewerDocuments.some(document => document.name === path))) return json({ error: "Invalid document" }, 400);
   const visitor = metadata(request).bot ? null : visitorIdentity(request);
   const measured = body.kind === "pdf_view" || (body.kind === "page_view" && body.engagement === true && ["/", "/index", "/index.html"].includes(path));
   const work = record(request, env, { id: body.id, kind: body.kind === "pdf_view" ? "pdf_request" : body.kind,
@@ -403,8 +404,9 @@ export default {
     if (url.pathname.startsWith("/__analytics/")) return json({ error: "Not found" }, 404);
     // Public GET/HEAD content can bypass a tracking-code exception. Private APIs cannot.
     if (request.method === "GET" || request.method === "HEAD") ctx.passThroughOnException?.();
-    const pdfPath = /\.pdf$/i.test(url.pathname) && documents.some(document => document.name === url.pathname);
-    const pdfReason = !pdfPath ? "" : url.searchParams.has("__pdf") ? "explicit_raw" : metadata(request).bot ? "known_bot" : pdfNavigationReason(request);
+    const pdfPath = /\.pdf$/i.test(url.pathname) && viewerDocuments.some(document => document.name === url.pathname);
+    const pdfReason = !pdfPath ? "" : url.searchParams.has("__pdf") ? "explicit_raw" : metadata(request).bot ? "known_bot"
+      : automatedClient(request.headers.get("User-Agent") || "") ? "automated_client" : pdfNavigationReason(request);
     if (pdfPath && pdfReason === "viewer") {
       const visitor = !optedOut(request) ? visitorIdentity(request) : null;
       const id = visitor ? crypto.randomUUID() : "";

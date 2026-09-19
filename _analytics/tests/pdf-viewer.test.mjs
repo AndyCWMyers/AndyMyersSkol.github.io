@@ -31,12 +31,14 @@ async function bootstrap({ tracking = true, privacy = {}, cookie = "", visible =
   window.PDFViewerApplicationOptions = { setAll: values => Object.assign(options, values) };
   window.acwStartEngagement = values => { starts.push(values); return { download: () => downloads++, stop() {} }; };
   window.acwInboundDetails = () => inboundDetails(document.referrer, "https://site.example/paper.pdf?utm_content=post&token=secret", "browser");
-  vm.runInNewContext(script, { window, document, navigator: privacy, URL, AbortController, performance: { now: () => 1234 },
+  const context = vm.createContext({ window, document, navigator: privacy, URL, AbortController, performance: { now: () => 1234 },
     location: { href: "https://site.example/paper.pdf?file=evil.pdf&utm_source=test%3C%3E#page=2&zoom=125" },
     crypto: { randomUUID: () => "pdf-view-id" },
     setTimeout: (fn, ms) => { timers.set(ms, fn); return ms; }, clearTimeout: id => timers.delete(id),
     fetch: async (url, init) => { if (url.endsWith("pdf-diagnostic")) { diagnostics.push(JSON.parse(init.body)); return { ok: true, status: 204 }; } requests.push({ url, ...init }); return new Promise(resolve => { resolveStart = resolve; }); },
   });
+  vm.runInContext(await readFile(asset("web/acw-diagnostics.js"), "utf8"), context);
+  vm.runInContext(script, context);
   document.emit("webviewerloaded");
   await settle();
   return { document, window, bus, requests, diagnostics, starts, opens, options, timers, errorMessage,
@@ -76,16 +78,17 @@ test("explicit browser navigations use PDF.js without HTML Accept while byte cli
 test("diagnostics report bounded startup/render/error codes, reuse route ID, and honor privacy", async () => {
   const diagnosticId = "11111111-1111-4111-8111-111111111111";
   const h = await bootstrap({ diagnosticId });
-  assert.deepEqual(h.diagnostics.map(row => row.stage), ["started"]);
+  assert.deepEqual(h.diagnostics.map(row => row.stage), ["started", "initialized"]);
+  h.bus.emit("documentloaded");
   h.bus.emit("pagerendered");
   h.bus.emit("pagerendered");
   assert.equal(h.window.acwPdfRenderMs, 1234);
-  assert.deepEqual(h.diagnostics.map(row => row.stage), ["started", "rendered"]);
+  assert.deepEqual(h.diagnostics.map(row => row.stage), ["started", "initialized", "loaded", "rendered"]);
   assert.equal(JSON.parse(h.requests[0].body).id, diagnosticId);
   h.bus.emit("documenterror", { message: "PRIVATE STACK NOT TO SEND" });
   h.bus.emit("documenterror", {});
-  assert.deepEqual(h.diagnostics.map(row => row.stage), ["started", "rendered", "error"]);
-  assert.equal(h.diagnostics[2].code, "document_error");
+  assert.deepEqual(h.diagnostics.map(row => row.stage), ["started", "initialized", "loaded", "rendered", "error"]);
+  assert.equal(h.diagnostics[4].code, "document_error");
   assert.doesNotMatch(JSON.stringify(h.diagnostics), /PRIVATE|ref.example/);
   for (const settings of [{ tracking: false }, { privacy: { doNotTrack: "1" } }, { privacy: { globalPrivacyControl: true } }, { cookie: "__Host-acw_ignore=1" }]) {
     const off = await bootstrap({ diagnosticId, ...settings });
@@ -141,6 +144,7 @@ test("renderer adapts real generic markup, same URL/raw loading, escaping, CSP a
   assert.match(html, /acw-pdf-path/);
   assert.match(html, /src="\/__analytics\/engagement.js"/);
   assert.match(html, /src="viewer.mjs" type="module"/);
+  assert(html.indexOf('src="acw-diagnostics.js"') < html.indexOf('src="/__analytics/engagement.js"'));
   assert.match(html, /base-uri 'self'/);
   assert.doesNotMatch(html, /connect-src \*|G-UNUSED|googletagmanager|gtag\(/);
   for (const id of ["viewerContainer", "pageNumber", "zoomInButton", "viewFindButton", "viewsManagerToggleButton", "downloadButton", "printButton"]) assert(html.includes('id="' + id + '"'));
@@ -167,6 +171,34 @@ test("full generic release resources and licenses present; query override remove
   assert.doesNotMatch(viewer, /file = params.get\("file"\)/);
   const pdf = await readFile(asset("build/pdf.mjs"), "utf8");
   assert.match(pdf, /6\.3\.289/);
+  assert.match(pdf, /core-js/);
+});
+
+test("pre-render runtime/rejection errors are bounded, private, and do not infer bots", async () => {
+  for (const [event, value, code] of [
+    ["error", { filename: "https://site.example/__pdfjs/web/viewer.mjs", message: "PRIVATE" }, "runtime_error"],
+    ["unhandledrejection", { reason: { stack: "PRIVATE at https://site.example/__pdfjs/build/pdf.mjs" } }, "promise_error"],
+  ]) {
+    const h = await bootstrap({ diagnosticId: "11111111-1111-4111-8111-111111111111" });
+    h.window.emit(event, value); h.window.emit(event, value);
+    assert.equal(h.errorMessage.hidden, false);
+    assert.equal(h.diagnostics.filter(row => row.stage === "error").length, 1);
+    assert.equal(h.diagnostics.at(-1).code, code);
+    assert.doesNotMatch(JSON.stringify(h.diagnostics), /PRIVATE/);
+  }
+  const h = await bootstrap({ diagnosticId: "11111111-1111-4111-8111-111111111111" });
+  h.window.emit("error", { filename: "chrome-extension://something/script.js" });
+  assert.equal(h.errorMessage.hidden, true);
+  assert(h.timers.has(60000));
+  h.document.visibilityState = "hidden";
+  h.document.emit("visibilitychange");
+  assert.equal(h.timers.has(60000), false);
+  h.document.visibilityState = "visible";
+  h.document.emit("visibilitychange");
+  [...h.timers.values()].at(-1)();
+  assert.equal(h.diagnostics.at(-1).code, "startup_timeout");
+  h.bus.emit("pagerendered");
+  assert.equal(h.requests.length, 1, "a slow render can still establish tracking");
 });
 
 test("PDF view waits for rendered+visible, then ack before tracker; native download hooks only", async () => {

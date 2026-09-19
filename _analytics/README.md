@@ -210,9 +210,10 @@ See [v3](https://developers.google.com/recaptcha/docs/v3),
 [verification](https://developers.google.com/recaptcha/docs/verify), and
 [quota and CSP guidance](https://developers.google.com/recaptcha/docs/faq).
 
-The real generic PDF.js release and licenses are in `viewer-assets/` and deployed
+The real generic PDF.js 6.3.289 compatibility (legacy) release and licenses are in `viewer-assets/` and deployed
 through the private ASSETS binding, served at `/__pdfjs/`. The Worker allowlists
-known documents and serves its HTML at the original PDF URL for explicit document
+known documents, including all six public appendices and the older congruence and
+term-limits PDFs, and serves its HTML at the original PDF URL for explicit document
 or iframe navigations (`Sec-Fetch-Mode: navigate`), even without HTML in Accept.
 Accepting HTML remains a fallback when Fetch Metadata is missing. Original bytes
 remain available at `?__pdf=raw`. Explicit non-navigation fetches, range requests,
@@ -233,15 +234,28 @@ PDF.js byte requests and nonzero continuation ranges are excluded. A dedicated
 60-per-IP/minute diagnostic limit bounds both inserts and browser signals without
 blocking content or consuming the ordinary event collector's limit.
 
-The viewer reports script startup, first rendered page, and at most one coded
-error per load. A server-generated ID ties these to the initial request and the
+The viewer reports script startup, initialization, document loading, first rendered
+page, and at most one coded error per load (migration 0021 adds the two new timestamps).
+A small pre-module script catches resource/runtime/rejection errors in local viewer
+scripts and reports a startup timeout after 60 seconds of visible time without a
+render. The timeout exposes the raw-PDF fallback but does not prevent a later
+successful render or imply an automated client. Third-party errors and arbitrary
+error text/stacks are not saved. A server-generated ID ties these to the initial request and the
 confirmed viewer session; writes require the matching visitor cookie and origin.
 Signals have at most two retries for route-insert races or transient failures;
 duplicate updates do not rewrite rows. A normal tracked load adds one diagnostic
-insert and two updates (plus SQLite index costs), not periodic heartbeat writes.
+insert and four updates (plus SQLite index costs), not periodic heartbeat writes.
 Missing signals remain unknown: they can mean blocking, unsupported JavaScript,
 an early exit, rate limiting, or a failed diagnostic request. A client-reported
 User-Agent can suggest a tool but is not verified identity.
+
+Self-identified automation (including MistralFrozenResearch, Claude-User,
+grok-search-verify and Docoloc) receives raw PDFs and a distinct routing reason.
+Labels are derived from retained User-Agent strings, including historical diagnostics.
+They do not retroactively change counts or the existing bot-filter policy. Ordinary
+browser strings, hosting providers, geography and missing JS never establish this
+label. Profile histories reuse the already-loaded latest 50 diagnostics for labels;
+older/out-of-retention unmatched history remains unclassified, without extra queries.
 
 Profiles expose the latest 50 diagnostics in the selected period, including
 requests without a counted viewer event. Authenticated `view=pdf_diagnostics`

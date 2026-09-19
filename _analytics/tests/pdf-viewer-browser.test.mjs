@@ -12,9 +12,10 @@ import { createPreviewServer } from "../scripts/pdf-viewer-preview.mjs";
 test("real generic viewer desktop/mobile: rendering, native controls, hooks, hashes and privacy", {
   skip: !process.env.PLAYWRIGHT_MODULE, timeout: 120000,
 }, async () => {
-  const { chromium } = await import(pathToFileURL(process.env.PLAYWRIGHT_MODULE));
-  const browser = await chromium.launch({ headless: true,
-    ...(process.env.PLAYWRIGHT_EXECUTABLE ? { executablePath: process.env.PLAYWRIGHT_EXECUTABLE } : {}) });
+  const engines = await import(pathToFileURL(process.env.PLAYWRIGHT_MODULE));
+  const engine = process.env.PLAYWRIGHT_BROWSER || "chromium";
+  const browser = await engines[engine].launch({ headless: true,
+    ...(engine === "chromium" && process.env.PLAYWRIGHT_EXECUTABLE ? { executablePath: process.env.PLAYWRIGHT_EXECUTABLE } : {}) });
   const { server, events } = createPreviewServer();
   server.listen(0, "127.0.0.1");
   await once(server, "listening");
@@ -23,21 +24,28 @@ test("real generic viewer desktop/mobile: rendering, native controls, hooks, has
     for (const viewport of [{ width: 1440, height: 960 }, { width: 390, height: 844 }, { width: 320, height: 740 }]) {
       const context = await browser.newContext({ viewport, deviceScaleFactor: 1,
         isMobile: viewport.width < 500, hasTouch: viewport.width < 500 });
+      // Exercise the compatibility build's polyfills, not just a modern browser.
+      await context.addInitScript(() => { URL.parse = undefined; Math.sumPrecise = undefined; Uint8Array.fromBase64 = undefined; });
       const page = await context.newPage();
       page.setDefaultTimeout(10000);
       const failures = [], errors = [], requests = [];
       page.on("pageerror", error => errors.push(error.message));
       page.on("response", response => { if (response.status() >= 400) failures.push(response.url()); });
       page.on("request", request => requests.push(request.url()));
-      await page.goto(base + "/preview.pdf?file=%2Fwrong.pdf&utm_source=smoke#page=2&zoom=100");
-      await page.waitForFunction(() => window.PDFViewerApplication?.pdfViewer.getPageView(1)?.renderingState === 3);
+      await page.goto(base + "/preview.pdf?diagnostics=on&file=%2Fwrong.pdf&utm_source=smoke#page=2&zoom=100");
+      try {
+        await page.waitForFunction(() => window.PDFViewerApplication?.pdfViewer.getPageView(1)?.renderingState === 3);
+      } catch (error) {
+        console.error({ engine, viewport, errors, failures, diagnostics: events.filter(e => e.endpoint.endsWith("pdf-diagnostic")) });
+        throw error;
+      }
       await page.waitForFunction(() => document.querySelector("#numPages").textContent.length > 0);
       assert.equal(await page.evaluate(() => window.PDFViewerApplication.page), 2);
       assert.equal(await page.evaluate(() => window.PDFViewerApplication.pdfViewer.currentScale), 1);
       assert.equal(new URL(page.url()).pathname, "/preview.pdf");
       assert.equal(new URL(page.url()).hash, "#page=2&zoom=100");
       assert(requests.some(url => url === base + "/preview.pdf?__pdf=raw"));
-      assert(!requests.some(url => url.includes("wrong.pdf") && !url.includes("?file=")));
+      assert(!requests.some(url => new URL(url).pathname === "/wrong.pdf"));
       const pixels = await page.evaluate(() => {
         const canvas = document.querySelector('.page[data-page-number="2"] canvas');
         const { data } = canvas.getContext("2d").getImageData(0, 0, canvas.width, canvas.height);
@@ -76,6 +84,8 @@ test("real generic viewer desktop/mobile: rendering, native controls, hooks, has
       assert(before > 0);
       const view = events.filter(e => e.endpoint === "/__analytics/event").at(-1).body;
       assert.equal(view.kind, "pdf_view");
+      assert.deepEqual(new Set(events.filter(e => e.endpoint === "/__analytics/pdf-diagnostic" && e.body.id === view.id).map(e => e.body.stage)),
+        new Set(["started", "initialized", "loaded", "rendered"]));
       const downloaded = page.waitForEvent("download");
       if (await page.locator("#downloadButton").isVisible()) await page.locator("#downloadButton").click();
       else { await page.locator("#secondaryToolbarToggleButton").click(); await page.locator("#secondaryDownload").click(); }

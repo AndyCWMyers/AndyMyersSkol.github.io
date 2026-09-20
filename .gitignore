@@ -1,0 +1,15 @@
+# Local Jekyll output and installed Ruby dependencies.
+/_site/
+/.sass-cache/
+/.jekyll-cache/
+/.jekyll-metadata
+/.bundle/
+/vendor/bundle/
+/vendor/cache/
+
+# Machine-local files and development dependencies.
+.DS_Store
+node_modules/
+.wrangler/
+.dev.vars*
+.env*

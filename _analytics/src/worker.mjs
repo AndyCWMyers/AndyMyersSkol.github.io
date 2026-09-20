@@ -9,7 +9,7 @@ import { estimatedCounty } from "./geography.mjs";
 import { connectingIp } from "./ip.mjs";
 import { QUERY_NAMES, REPORT_PLANS, queryUsage, countryCounts } from "./report-plan.mjs";
 import { headlineSummary } from "./summary.mjs";
-import { startReading, saveReading, readingItems, addReadingItems } from "./engagement.mjs";
+import { startReading, saveReading, readingItems, addReadingItems, recordReferenceDownload } from "./engagement.mjs";
 import engagementSource from "./engagement-client.mjs";
 import { pdfViewerResponse, pdfNavigationReason } from "./pdf-viewer.mjs";
 import { readUsage } from "./usage.mjs";
@@ -119,12 +119,12 @@ async function record(request, env, event) {
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
       CASE WHEN ? = 'pdf_request' AND ? != '' THEN COALESCE((
         SELECT id FROM events WHERE kind = 'pdf_request' AND duplicate_of = ''
-          AND visitor_hash = ? AND path = ? AND occurred_at BETWEEN ? AND ?
+          AND visitor_hash = ? AND path = ? AND target = ? AND occurred_at BETWEEN ? AND ?
         ORDER BY occurred_at, rowid LIMIT 1
       ), '') ELSE '' END)`)
     .bind(id, now, event.kind, event.path, event.target || "",
       m.referrer, m.source, m.medium, m.campaign, m.country, m.region, m.browser, m.device, m.bot, event.status || 200, visitor, m.referrerStatus, personalBrowser(request) ? 1 : 0, m.county, m.county_fips, connectingIp(request), m.city, m.os, null, m.inbound ? JSON.stringify(m.inbound) : null,
-      m.asn, m.networkOrg, event.viewer ? '' : event.kind, visitor, visitor, event.path, now - 5, now).run();
+      m.asn, m.networkOrg, event.viewer ? '' : event.kind, visitor, visitor, event.path, event.target || '', now - 5, now).run();
   if ((inserted.meta?.changes ?? inserted.changes) === 0) return false;
   if (event.kind !== 'pdf_request') return true;
   const stored = await env.DB.prepare("SELECT duplicate_of FROM events WHERE id = ?").bind(id).all();
@@ -413,7 +413,8 @@ export default {
     // Public GET/HEAD content can bypass a tracking-code exception. Private APIs cannot.
     if (request.method === "GET" || request.method === "HEAD") ctx.passThroughOnException?.();
     const pdfPath = /\.pdf$/i.test(url.pathname) && viewerDocuments.some(document => document.name === url.pathname);
-    const pdfReason = !pdfPath ? "" : url.searchParams.has("__pdf") ? "explicit_raw" : metadata(request).bot ? "known_bot"
+    const referenceDownload = pdfPath && url.searchParams.get("__pdf") === "reference";
+    const pdfReason = !pdfPath ? "" : referenceDownload ? "reference_download" : url.searchParams.has("__pdf") ? "explicit_raw" : metadata(request).bot ? "known_bot"
       : automatedClient(request.headers.get("User-Agent") || "") ? "automated_client" : pdfNavigationReason(request);
     if (pdfPath && pdfReason === "viewer") {
       const visitor = !optedOut(request) ? visitorIdentity(request) : null;
@@ -445,8 +446,13 @@ export default {
       const info = metadata(request);
       const visitor = pdfVisitor || (info.bot ? null : visitorIdentity(request));
       const identity = visitor && env.GA_API_SECRET && env.GA_MEASUREMENT_ID ? pdfIdentity(request) : null;
-      background(ctx, record(request, env, { id: diagnosticId, kind: "pdf_request", path: url.pathname, status: response.status, visitorId: visitor?.value })
-        .then(counted => counted && identity ? sendPdfEvent(request, env, identity, info) : undefined));
+      background(ctx, record(request, env, { id: diagnosticId, kind: "pdf_request", path: url.pathname, status: response.status, visitorId: visitor?.value,
+        target: referenceDownload ? "reference_manager" : "" })
+        .then(async counted => {
+          if (!counted) return;
+          if (referenceDownload) await recordReferenceDownload(env.DB, diagnosticId);
+          if (identity) await sendPdfEvent(request, env, identity, info);
+        }));
       if (visitor) {
         const tracked = new Response(response.body, response);
         tracked.headers.append("Set-Cookie", visitor.cookie);

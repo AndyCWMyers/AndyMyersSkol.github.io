@@ -17,6 +17,13 @@ class Target {
 
 async function settle() { for (let i = 0; i < 12; i++) await Promise.resolve(); }
 
+test("viewer advertises a dedicated metadata PDF without changing normal viewer bytes", async () => {
+  const html = await pdfViewerResponse('/andrew_c_w_myers_CV.pdf').text();
+  assert.match(html, /name="citation_title" content="CV"/);
+  assert.match(html, /name="citation_pdf_url" content="https:\/\/www.andrewcwmyers.com\/andrew_c_w_myers_CV.pdf\?__pdf=reference"/);
+  assert.match(html, /href="\/andrew_c_w_myers_CV.pdf\?__pdf=raw"/);
+});
+
 async function bootstrap({ tracking = true, privacy = {}, cookie = "", visible = true, diagnosticId = "", paperTitle = "Paper Title" } = {}) {
   const script = await readFile(asset("web/acw-viewer.js"), "utf8");
   const document = new Target(), window = new Target(), bus = new Target();

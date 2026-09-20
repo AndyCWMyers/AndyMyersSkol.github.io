@@ -6,6 +6,20 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{1
 const KINDS = new Set(["page_view", "pdf_request"]);
 const PERSONAL = "(s.is_personal = 1 OR s.visitor_hash IN (SELECT visitor_hash FROM personal_visitors))";
 
+export async function recordReferenceDownload(db, id) {
+  await db.batch([
+    db.prepare(`INSERT OR IGNORE INTO reading_sessions
+      (id, visitor_hash, path, kind, is_personal, started_at, last_seen, downloads, measurement_source)
+      SELECT id, visitor_hash, path, kind, is_personal, occurred_at, occurred_at, 1, 'reference_manager'
+      FROM events WHERE id = ? AND kind = 'pdf_request' AND target = 'reference_manager'
+        AND bot = 0 AND duplicate_of = '' AND is_personal = 0
+        AND visitor_hash NOT IN (SELECT visitor_hash FROM personal_visitors)`).bind(id),
+    db.prepare(`INSERT OR IGNORE INTO reading_hours(session_id, hour, downloads)
+      SELECT id, (started_at / 3600) * 3600, 1 FROM reading_sessions
+      WHERE id = ? AND measurement_source = 'reference_manager'`).bind(id),
+  ]);
+}
+
 export async function startReading(db, id, visitor) {
   if (!visitor) return;
   await db.prepare(`INSERT OR IGNORE INTO reading_sessions(id, visitor_hash, path, kind, is_personal, started_at, last_seen)
@@ -44,7 +58,7 @@ export async function saveReading(db, body, visitor, now = Date.now()) {
   const stored = await db.prepare(`SELECT s.*, ${PERSONAL} AS personal FROM reading_sessions s
     WHERE s.id = ? AND s.visitor_hash = ?`).bind(body.id, visitor).all();
   const session = stored.results[0];
-  if (!session || !KINDS.has(session.kind)) return 404;
+  if (!session || !KINDS.has(session.kind) || session.measurement_source !== 'viewer') return 404;
   // Keep viewer confirmation and historical measurements, but never add host engagement.
   if (session.personal) return 204;
   if (body.hours.some(row => row.attention !== undefined) && (session.kind !== "page_view" || session.path !== "/")) return 400;
@@ -80,7 +94,7 @@ export async function saveReading(db, body, visitor, now = Date.now()) {
 
 export async function readingItems(db, dates, excludePersonal, path = "") {
   const response = await db.prepare(`SELECT s.path AS name, SUM(h.milliseconds) / 1000.0 AS readingSeconds,
-      SUM(h.downloads) AS downloads, COUNT(DISTINCT s.id) AS measuredViews
+      SUM(h.downloads) AS downloads, COUNT(DISTINCT CASE WHEN s.measurement_source = 'viewer' THEN s.id END) AS measuredViews
     FROM reading_hours h JOIN reading_sessions s ON s.id = h.session_id
     WHERE h.hour >= ? AND h.hour < ? ${excludePersonal ? `AND NOT ${PERSONAL}` : ""} ${path ? "AND s.path = ?" : ""}
     GROUP BY s.path`).bind(dates.from, dates.until, ...(path ? [path] : [])).all();
@@ -114,9 +128,9 @@ export async function userReading(db, dates, excludePersonal, labels) {
       MAX(CASE WHEN s.risk_recent = 1 THEN s.period_bot_at END) AS latestBotScoreAt,
       SUM(CASE WHEN s.kind = 'pdf_request' THEN COALESCE(h.milliseconds,0) ELSE 0 END) / 1000.0 AS readingSeconds,
       SUM(CASE WHEN s.kind = 'page_view' THEN COALESCE(h.milliseconds,0) ELSE 0 END) / 1000.0 AS homepageSeconds,
-      SUM(COALESCE(h.downloads,0)) AS downloads, COUNT(DISTINCT CASE WHEN h.session_id IS NOT NULL THEN s.id END) AS measuredViews,
-      COUNT(DISTINCT CASE WHEN h.session_id IS NOT NULL AND s.kind = 'pdf_request' THEN s.id END) AS measuredPdfViews,
-      COUNT(DISTINCT CASE WHEN s.kind = 'pdf_request' AND (s.started_at >= ? OR h.session_id IS NOT NULL) THEN s.id END) AS pdfViewerSessions,
+      SUM(COALESCE(h.downloads,0)) AS downloads, COUNT(DISTINCT CASE WHEN h.session_id IS NOT NULL AND s.measurement_source = 'viewer' THEN s.id END) AS measuredViews,
+      COUNT(DISTINCT CASE WHEN h.session_id IS NOT NULL AND s.kind = 'pdf_request' AND s.measurement_source = 'viewer' THEN s.id END) AS measuredPdfViews,
+      COUNT(DISTINCT CASE WHEN s.kind = 'pdf_request' AND s.measurement_source = 'viewer' AND (s.started_at >= ? OR h.session_id IS NOT NULL) THEN s.id END) AS pdfViewerSessions,
       COUNT(DISTINCT CASE WHEN h.session_id IS NOT NULL AND s.kind = 'page_view' THEN s.id END) AS measuredHomepageViews,
       MAX(CASE WHEN s.active = 1 AND s.last_seen >= ? AND s.last_seen < ? THEN s.last_seen ELSE 0 END) AS liveAt,
       MAX(CASE WHEN s.recent = 1 THEN s.last_seen END) AS lastReadingAt,
@@ -132,7 +146,7 @@ export async function historyReading(db, dates, excludePersonal, ids) {
   // D1 allows at most 100 bound parameters per statement.
   for (let offset = 0; offset < ids.length; offset += 90) {
     const batch = ids.slice(offset, offset + 90);
-    const response = await db.prepare(`SELECT s.id,
+    const response = await db.prepare(`SELECT s.id, s.measurement_source,
     s.recaptcha_score AS botScore, s.recaptcha_at AS botScoreAt, s.recaptcha_status AS assessmentStatus, s.client_details AS clientDetails,
     CASE WHEN COUNT(h.session_id) > 0 THEN 'tracked' WHEN s.seq < 0 THEN 'no_updates' ELSE 'outside_period' END AS readingStatus,
     SUM(h.milliseconds) / 1000.0 AS readingSeconds, SUM(h.downloads) AS downloads,
@@ -141,7 +155,8 @@ export async function historyReading(db, dates, excludePersonal, ids) {
     LEFT JOIN reading_hours h ON h.session_id = s.id AND h.hour >= ? AND h.hour < ?
     WHERE s.id IN (${batch.map(() => "?").join(",")}) ${excludePersonal ? `AND NOT ${PERSONAL}` : ""} GROUP BY s.id`)
       .bind(dates.from, dates.until, ...batch).all();
-    rows.push(...response.results.map(({ readingSeconds, downloads, attentionHours, pdfAttentionHours, interactionHours, clientDetails: details, ...row }) => {
+    rows.push(...response.results.map(({ measurement_source, readingSeconds, downloads, attentionHours, pdfAttentionHours, interactionHours, clientDetails: details, ...row }) => {
+      if (measurement_source === 'reference_manager') return { ...row, readingStatus: 'untracked', downloadSource: 'reference_manager', ...(downloads === null ? {} : { downloads }) };
       const homepageAttention = summarizeAttention(JSON.parse(attentionHours));
       const pdfAttention = summarizePdfAttention(JSON.parse(pdfAttentionHours));
       const interactions = summarizeInteractions(JSON.parse(interactionHours));

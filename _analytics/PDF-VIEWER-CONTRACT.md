@@ -37,6 +37,23 @@ and private engagement reports.
 
 ## View and engagement protocol
 
+Viewer HTML includes `citation_title` and an absolute `citation_pdf_url` ending
+in `?__pdf=reference`, which Zotero's Embedded Metadata translator can retrieve.
+This URL serves the original PDF, not viewer HTML. Successful initial GETs
+(including first byte ranges and cache revalidation) create download-only
+engagement with `measurement_source=reference_manager`. Short retries share the
+existing five-second retrieval deduplication; viewer fetches use a different URL
+and do not create these downloads. HEAD, continuation ranges, errors, known bots,
+privacy opt-outs, and identified host engagement are excluded.
+
+These downloads enter the same totals, per-paper metrics, users and histories as
+viewer download actions, but do not count as confirmed PDF.js sessions or measured
+reading. Histories expose `downloadSource=reference_manager` and omit reading time.
+This measures retrieval through metadata, not a confirmed save to disk or a
+guaranteed Zotero client. Other reference managers can use the same metadata.
+Browser-cookie continuity is not guaranteed for desktop/server-side downloads.
+Direct PDF saves that bypass the metadata URL remain ordinary PDF requests.
+
 On the first successful page render while visible, the viewer POSTs
 `/__analytics/event` with `{kind:'pdf_view', id, path,
 referrer, source, medium, campaign, inbound}`. Referrer is an origin or empty string;

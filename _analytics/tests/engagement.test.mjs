@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { readFileSync, readdirSync } from "node:fs";
 import worker, { reportDates } from "../src/worker.mjs";
-import { startReading, saveReading, validReading, readingItems, userReading, historyReading } from "../src/engagement.mjs";
+import { startReading, saveReading, validReading, readingItems, userReading, historyReading, recordReferenceDownload } from "../src/engagement.mjs";
 import { visitorHash } from "../src/preferences.mjs";
 import { HOMEPAGE_ITEMS, validAttention, summarizeAttention } from "../src/homepage-attention.mjs";
 import { validPdfAttention, summarizePdfAttention } from "../src/pdf-attention.mjs";
@@ -51,6 +51,74 @@ function snapshot(id, changes = {}) {
 }
 
 function dates(day) { return reportDates(new URL(`${ORIGIN}?start=${day}&end=${day}`)); }
+
+test("reference-manager retrievals count as downloads without inventing viewer sessions or reading time", async () => {
+  const { db, DB } = database(), ctx = context();
+  const env = { DB, ORIGIN: { fetch: async () => new Response('%PDF-original', { headers: { 'Content-Type': 'application/pdf' } }) } };
+  const visitorId = crypto.randomUUID();
+  const cookie = '__Host-acw_visitor=' + visitorId;
+  const hash = await visitorHash(visitorId);
+  const headers = { Cookie: cookie, 'User-Agent': 'Mozilla/5.0 Chrome/140.0', 'Sec-Fetch-Dest': 'empty', 'Sec-Fetch-Site': 'same-origin' };
+  // A viewer's preceding view must not swallow the subsequent download.
+  const view = crypto.randomUUID();
+  db.prepare("INSERT INTO events(id,occurred_at,kind,path,visitor_hash) VALUES(?,?,'pdf_request',?,?)")
+    .run(view, Math.floor(Date.now() / 1000), PDF, hash);
+  const response = await worker.fetch(new Request(ORIGIN + PDF + '?__pdf=reference', { headers }), env, ctx);
+  assert.equal(await response.text(), '%PDF-original');
+  await ctx.finish();
+  const download = db.prepare("SELECT * FROM reading_sessions").get();
+  assert.equal(download.measurement_source, 'reference_manager');
+  assert.equal(download.downloads, 1);
+  assert.equal(download.active, 0);
+  await worker.fetch(new Request(ORIGIN + PDF + '?__pdf=reference', { headers }), env, ctx);
+  await ctx.finish();
+  await recordReferenceDownload(DB, download.id);
+  assert.equal(db.prepare('SELECT SUM(downloads) AS n FROM reading_hours').get().n, 1);
+  const day = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Los_Angeles' });
+  const period = dates(day);
+  const items = await readingItems(DB, period, true);
+  assert.equal(items.rows[0].downloads, 1);
+  assert.equal(items.rows[0].measuredViews, 0);
+  const users = await userReading(DB, period, true, [hash.slice(0, 24)]);
+  assert.equal(users.rows[0].downloads, 1);
+  assert.equal(users.rows[0].pdfViewerSessions, 0);
+  assert.equal(users.rows[0].measuredPdfViews, 0);
+  const history = await historyReading(DB, period, true, [download.id]);
+  assert.equal(history.rows[0].downloads, 1);
+  assert.equal(history.rows[0].readingSeconds, undefined);
+  assert.equal(history.rows[0].readingStatus, 'untracked');
+  assert.equal(history.rows[0].downloadSource, 'reference_manager');
+  assert.equal(await saveReading(DB, snapshot(download.id), hash, now), 404);
+  const summary = await report(DB, `view=summary&start=${day}&end=${day}`);
+  assert.equal(summary.engagement.downloads, 1);
+  const papers = await report(DB, `view=papers&start=${day}&end=${day}`);
+  assert.equal(papers.items.find(row => row.name === PDF).downloads, 1);
+  assert.equal((await readingItems(DB, period, true, '/other.pdf')).rows.length, 0);
+  assert.equal((await readingItems(DB, dates('2020-01-01'), true)).rows.length, 0);
+  const profile = await report(DB, `view=users&user=${hash.slice(0,24)}&start=${day}&end=${day}`);
+  assert.equal(profile.rows.find(row => row.id === download.id).downloadSource, 'reference_manager');
+  assert.equal(profile.diagnostics.find(row => row.id === download.id).confirmed, 0);
+  db.prepare('INSERT INTO personal_visitors(visitor_hash) VALUES(?)').run(hash);
+  assert.equal((await readingItems(DB, period, true)).rows.length, 0);
+  assert.equal((await readingItems(DB, period, false)).rows[0].downloads, 1);
+});
+
+test("reference downloads exclude HEAD, continuation ranges, errors, bots, hosts, privacy and viewer bytes", async () => {
+  for (const option of [
+    { method: 'HEAD' }, { headers: { Range: 'bytes=10-100' }, status: 206 }, { status: 404 },
+    { headers: { 'User-Agent': 'Googlebot' } }, { headers: { DNT: '1' } },
+    { headers: { 'Sec-GPC': '1' } }, { headers: { Cookie: '__Host-acw_ignore=1' } },
+    { headers: { Cookie: '__Host-acw_personal=1' } }, { raw: true },
+  ]) {
+    const { db, DB } = database(), ctx = context();
+    const env = { DB, ORIGIN: { fetch: async () => new Response(option.method === 'HEAD' ? null : '%PDF', { status: option.status || 200, headers: { 'Content-Type': 'application/pdf' } }) } };
+    await worker.fetch(new Request(ORIGIN + PDF + (option.raw ? '?__pdf=raw' : '?__pdf=reference'), {
+      method: option.method || 'GET', headers: { 'User-Agent': 'Mozilla/5.0 Chrome/140', 'X-ACW-PDF-Viewer': '1', ...option.headers },
+    }), env, ctx);
+    await ctx.finish();
+    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM reading_hours').get().n, 0, JSON.stringify(option));
+  }
+});
 
 test("PDF attention is private, date-scoped, cumulative, idempotent and reuses existing hourly writes", async () => {
   const { db, DB } = database();

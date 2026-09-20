@@ -53,7 +53,7 @@ export async function pdfDiagnostics(db, dates, excludePersonal, user = "", offs
     d.range_header AS range, d.started_at AS startedAt, d.initialized_at AS initializedAt,
     d.loaded_at AS loadedAt, d.rendered_at AS renderedAt,
     d.error_code AS errorCode, d.error_status AS errorStatus, d.error_at AS errorAt,
-    EXISTS(SELECT 1 FROM reading_sessions s WHERE s.id = d.id AND s.visitor_hash = d.visitor_hash) AS confirmed
+    EXISTS(SELECT 1 FROM reading_sessions s WHERE s.id = d.id AND s.visitor_hash = d.visitor_hash AND s.measurement_source = 'viewer') AS confirmed
     FROM pdf_diagnostics d WHERE d.occurred_at >= ? AND d.occurred_at < ?
     ${user ? "AND substr(d.visitor_hash,1,24) = ?" : ""} ${path ? "AND d.path = ?" : ""}
     ${excludePersonal ? "AND d.is_personal = 0 AND NOT EXISTS(SELECT 1 FROM personal_visitors p WHERE p.visitor_hash = d.visitor_hash)" : ""}

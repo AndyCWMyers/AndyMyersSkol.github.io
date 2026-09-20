@@ -44,6 +44,8 @@ export function pdfViewerResponse(path, measurementId, trackingEnabled = true, d
   const title = documents.find(document => document.name === path)?.title || decodeURIComponent(path.split("/").pop());
   const rawLink = `<a href="${escapeAttribute(path + "?__pdf=raw")}">Open original PDF</a>`;
   const head = `<base href="/__pdfjs/web/" />
+    <meta name="citation_title" content="${escapeAttribute(title)}" />
+    <meta name="citation_pdf_url" content="${escapeAttribute('https://www.andrewcwmyers.com' + path + '?__pdf=reference')}" />
     <meta name="acw-pdf-path" content="${escapeAttribute(path)}" />
     <meta name="acw-pdf-title" content="${escapeAttribute(title)}" />
     <meta name="acw-tracking" content="${trackingEnabled ? "true" : "false"}" />

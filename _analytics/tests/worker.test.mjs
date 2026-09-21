@@ -176,6 +176,13 @@ test("Pacific date filters and daily totals share local midnight boundaries", as
   assert.equal(report.timeZone, "America/Los_Angeles");
   assert.equal(report.totals[0].count, 2);
   assert.deepEqual(report.daily, [{ day: "2026-09-16", kind: "page_view", count: 2 }]);
+  for (const page of ["", "/"]) {
+    const daily = await (await worker.fetch(request(`/__analytics/report?view=daily&start=2026-09-16&end=2026-09-16&page=${encodeURIComponent(page)}`, { headers }), env, context())).json();
+    assert.deepEqual(daily.daily, report.daily);
+    assert.equal(daily.queryUsage.queryCount, 1);
+    assert.equal(daily.items, undefined);
+    assert.equal(daily.totals, undefined);
+  }
   const history = await (await worker.fetch(request(`/__analytics/report?view=users&user=${"a".repeat(24)}&start=2026-09-16&end=2026-09-16`, { headers }), env, context())).json();
   assert.deepEqual(history.rows.map(row => row.time), times.slice(1, 3).reverse().map(time => Date.parse(time) / 1000));
 });
@@ -287,7 +294,7 @@ test("lazy report plans preserve full-report values while skipping unopened tabs
   for (const excludePersonal of ["0", "1"]) {
     const full = await get("all", { excludePersonal });
     assert.equal(calls.at(-1), 20);
-    const plans = { summary: ["totals", "personalActivity"], overview: ["items"], papers: ["items"], outbound: ["items"],
+    const plans = { summary: ["totals", "personalActivity"], overview: ["items"], daily: ["daily"], papers: ["items"], outbound: ["items"],
       geography: ["countries", "cities"], sources: ["referrers"], devices: ["devices"], states: ["states"], counties: ["counties", "countyViews"], countries: ["countryViews"], cities: ["cityViews"] };
     for (const [view, fields] of Object.entries(plans)) {
       const part = await get(view, { excludePersonal });

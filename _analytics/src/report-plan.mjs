@@ -6,6 +6,7 @@ export const REPORT_PLANS = {
   all: QUERY_NAMES,
   summary: ["totals", "personalActivity"],
   overview: ["items"],
+  daily: ["daily"],
   papers: ["items"],
   outbound: ["items"],
   geography: ["cities"],

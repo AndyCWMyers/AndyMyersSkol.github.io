@@ -313,7 +313,7 @@ async function report(request, env) {
   // Fixed aggregate queries; user histories use the private view above.
   const queries = [
     query(`SELECT kind, bot, ${counts} FROM ${eventTable} WHERE ${where} GROUP BY kind, bot`),
-    query(`SELECT strftime('%Y-%m-%dT%H:00:00Z', occurred_at, 'unixepoch') AS hour, kind, ${requestCount} AS count FROM ${eventTable} WHERE ${where} AND bot = 0 GROUP BY hour, kind ORDER BY hour`),
+    query(`SELECT strftime('%Y-%m-%dT%H:00:00Z', occurred_at, 'unixepoch') AS hour, kind, ${view === "daily" ? `${mainPath} AS name,` : ""} ${requestCount} AS count FROM ${eventTable} WHERE ${where} AND bot = 0 GROUP BY hour, kind${view === "daily" ? ", name" : ""} ORDER BY hour`),
     query(`SELECT CASE WHEN kind = 'pdf_click' THEN target ELSE path END AS name, kind, ${requestCount} AS count FROM ${eventTable} WHERE ${where} AND bot = 0 AND kind IN ('pdf_request','pdf_click','page_view') GROUP BY name, kind ORDER BY count DESC LIMIT 100`),
     query(`SELECT target AS name, ${requestCount} AS count FROM ${eventTable} WHERE ${where} AND bot = 0 AND kind = 'outbound_click' GROUP BY target ORDER BY count DESC LIMIT 100`),
     query(`SELECT country AS name, kind, ${requestCount} AS count FROM ${eventTable} WHERE ${where} AND bot = 0 AND kind IN ('page_view','pdf_request','outbound_click') GROUP BY country, kind ORDER BY count DESC`),
@@ -363,11 +363,12 @@ async function report(request, env) {
     measuredQueries.push(reading.measured);
   }
   const keys = ["totals", "daily", "pages", "outbound", "countries", "referrers", "devices", "campaigns"];
+  const dailyByPage = view === "daily" ? pacificDaily(results[1].results, true) : undefined;
   results[1].results = pacificDaily(results[1].results);
   const value = { generatedAt: new Date().toISOString(), timeZone: TIME_ZONE, start: dates.start, end: dates.end,
     ...Object.fromEntries(keys.map((key, i) => [key, results[i].results])),
     pdfVisitors: results[8].results[0], pdfVisitorsByPath: results[9].results,
-    documents, items: results[10].results, breakdowns: [...results[11].results, ...results[16].results],
+    documents, dailyByPage, items: results[10].results, breakdowns: [...results[11].results, ...results[16].results],
     excludePersonal, page, engagement, personalActivity: results[12].results[0],
     states: results[13].results,
     counties: results[14].results, countyViews: results[15].results,
@@ -380,6 +381,7 @@ async function report(request, env) {
       "Marked personal activity can be filtered from all report aggregates. Privacy opt-outs are never recorded. IP addresses are retained privately and shown only in authenticated user profiles; no fingerprints are created."] };
   const fields = new Set(["generatedAt", "timeZone", "start", "end", "excludePersonal", "page", "engagement", "documents", "gaPropertyId", "gaMeasurementId", "gaPdfForwarding", ...REPORT_PLANS[view]]);
   if (view === "geography") fields.add("countries");
+  if (view === "daily") fields.add("dailyByPage");
   return json({ ...(view === "all" ? value : Object.fromEntries(Object.entries(value).filter(([key]) => fields.has(key)))),
     view, ...(view === "detail" ? { section, name } : {}),
     queryUsage: queryUsage(measuredQueries) });

@@ -19,13 +19,13 @@ export function pacificMidnight(day) {
   return instant / 1000;
 }
 
-export function pacificDaily(rows) {
+export function pacificDaily(rows, byPage = false) {
   const groups = new Map();
   for (const row of rows) {
-    const day = pacificDate(new Date(row.hour)), key = `${day}:${row.kind}`;
-    const group = groups.get(key) || { day, kind: row.kind, count: 0 };
+    const day = pacificDate(new Date(row.hour)), key = JSON.stringify([day, row.kind, ...(byPage ? [row.name] : [])]);
+    const group = groups.get(key) || { day, kind: row.kind, count: 0, ...(byPage ? { name: row.name } : {}) };
     group.count += row.count;
     groups.set(key, group);
   }
-  return [...groups.values()].sort((a, b) => a.day.localeCompare(b.day) || a.kind.localeCompare(b.kind));
+  return [...groups.values()].sort((a, b) => a.day.localeCompare(b.day) || a.kind.localeCompare(b.kind) || (a.name || "").localeCompare(b.name || ""));
 }

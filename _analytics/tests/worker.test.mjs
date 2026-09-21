@@ -179,6 +179,7 @@ test("Pacific date filters and daily totals share local midnight boundaries", as
   for (const page of ["", "/"]) {
     const daily = await (await worker.fetch(request(`/__analytics/report?view=daily&start=2026-09-16&end=2026-09-16&page=${encodeURIComponent(page)}`, { headers }), env, context())).json();
     assert.deepEqual(daily.daily, report.daily);
+    assert.deepEqual(daily.dailyByPage, [{ day: "2026-09-16", kind: "page_view", name: "/", count: 2 }]);
     assert.equal(daily.queryUsage.queryCount, 1);
     assert.equal(daily.items, undefined);
     assert.equal(daily.totals, undefined);
@@ -304,6 +305,15 @@ test("lazy report plans preserve full-report values while skipping unopened tabs
       assert.equal(part.queryUsage.rowsRead, ["summary", "overview", "papers"].includes(view) ? null : queryCount * 10);
       assert.equal(part.breakdowns, undefined);
       for (const field of fields) assert.deepEqual(part[field], field === "items" ? full.items.filter(row => row.section === (view === "outbound" ? "outbound" : "main")) : full[field], `${view}:${field}`);
+      if (view === "daily") {
+        for (const item of full.items.filter(row => row.section === "main")) {
+          assert.equal(part.dailyByPage.filter(row => row.name === item.name && ["page_view", "pdf_request"].includes(row.kind)).reduce((sum, row) => sum + row.count, 0), item.count);
+          const scoped = await get("daily", { excludePersonal, page: item.name });
+          assert.ok(scoped.dailyByPage.every(row => row.name === item.name));
+          assert.deepEqual(scoped.dailyByPage, part.dailyByPage.filter(row => row.name === item.name));
+          assert.equal(scoped.queryUsage.queryCount, 1);
+        }
+      }
     }
     for (const item of full.items) {
       const detail = await get("detail", { excludePersonal, section: item.section, name: item.name });

@@ -21,7 +21,11 @@ function fixture() {
   const DB = { prepare: sql => ({ bind: (...values) => ({
     run: async () => db.prepare(sql).run(...values),
     all: async () => ({ results: db.prepare(sql).all(...values) }),
-  }) }) };
+  }) }), batch: async statements => {
+    db.exec("BEGIN");
+    try { const results = []; for (const statement of statements) results.push(await statement.all()); db.exec("COMMIT"); return results; }
+    catch (error) { db.exec("ROLLBACK"); throw error; }
+  } };
   return { db, DB };
 }
 
@@ -143,5 +147,75 @@ test("client assessment failure categories contain no token or error text and cr
     assert.equal(statuses.at(-1), { script: "script_failed", execute: "execution_failed", post: "submission_failed", success: "submitted" }[mode]);
     assert.equal(posts.length, ["post", "success"].includes(mode) ? 1 : 0);
     assert.doesNotMatch(JSON.stringify(statuses), /private error|test-token/);
+  }
+});
+
+test("early PDF scores survive failed rendering, transfer once on rendering, and deduplicate races", async () => {
+  for (const timing of ["before", "during", "after", "never"]) {
+    const { db, DB } = fixture(), id = crypto.randomUUID();
+    db.prepare(`INSERT INTO pdf_diagnostics(id, occurred_at, visitor_hash, path, route, reason, status)
+      VALUES (?, ?, ?, '/paper.pdf', 'viewer', 'viewer', 200)`).run(id, now / 1000, visitor);
+    let calls = 0;
+    const render = async () => {
+      db.prepare("INSERT INTO events(id,occurred_at,kind,path,visitor_hash) VALUES(?,?,'pdf_request','/paper.pdf',?)").run(id, now / 1000, visitor);
+      await startReading(DB, id, visitor);
+    };
+    if (timing === "before") await render();
+    const env = { DB, RECAPTCHA_FETCH: async () => {
+      calls++;
+      if (timing === "during") await render();
+      return Response.json({ ...valid, action: "pdf_view", score: 0.7 });
+    } };
+    assert.equal(await assessVisit(env, { id, token, diagnostic: true }, "b".repeat(64), host, now), 404);
+    await Promise.all([
+      assessVisit(env, { id, token, diagnostic: true }, visitor, host, now),
+      assessVisit(env, { id, token, diagnostic: true }, visitor, host, now),
+      assessVisit(env, { id, token }, visitor, host, now),
+    ]);
+    if (timing === "after") await render();
+    await assessVisit(env, { id, token }, visitor, host, now);
+    assert.equal(calls, 1);
+    assert.equal(db.prepare("SELECT recaptcha_score FROM pdf_diagnostics").get().recaptcha_score, 0.7);
+    const rows = db.prepare("SELECT * FROM reading_sessions").all();
+    assert.equal(rows.length, timing === "never" ? 0 : 1);
+    if (rows.length) {
+      assert.equal(rows[0].recaptcha_score, 0.7);
+      assert.equal(rows[0].downloads, 0);
+      assert.equal(rows[0].milliseconds, 0);
+    }
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM reading_hours").get().n, 0);
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM events").get().n, timing === "never" ? 0 : 1);
+  }
+});
+
+test("early scoring excludes raw, old, bot and personal diagnostic records", async () => {
+  const { db, DB } = fixture(); let calls = 0;
+  const env = { DB, RECAPTCHA_FETCH: async () => { calls++; throw Error("must not run"); } };
+  for (const [route, age, personal, bot] of [["raw", 0, 0, 0], ["viewer", 601, 0, 0], ["viewer", 0, 1, 0], ["viewer", 0, 0, 1]]) {
+    const id = crypto.randomUUID();
+    db.prepare(`INSERT INTO pdf_diagnostics(id,occurred_at,visitor_hash,path,route,reason,status,is_personal,bot)
+      VALUES (?,?,?,'/paper.pdf',?,'viewer',200,?,?)`).run(id, now / 1000 - age, visitor, route, personal, bot);
+    await assessVisit(env, { id, token, diagnostic: true }, visitor, host, now);
+  }
+  assert.equal(calls, 0);
+});
+
+test("transient script failure retries once, shares early score/status, and stops on privacy opt-out", async () => {
+  for (const optOut of [false, true]) {
+    let enabled = true, scripts = 0, executions = 0; const posts = [], statuses = [];
+    const context = vm.createContext({ setTimeout, clearTimeout, allowed: () => enabled,
+      window: { acwRecaptchaSiteKey: "key", grecaptcha: { ready: callback => callback(), execute: async () => { executions++; return token; } } },
+      document: { createElement: () => ({}), head: { appendChild: script => {
+        scripts++;
+        queueMicrotask(() => { if (scripts === 1) { if (optOut) enabled = false; script.onerror(); } else script.onload(); });
+      } } }, post: async (url, body) => { posts.push(JSON.parse(body)); return true; },
+    });
+    vm.runInContext(client + ";this.assess = assessVisit;", context);
+    await context.assess("visit", "pdf_view", () => {}, true);
+    await context.assess("visit", "pdf_view", value => statuses.push(value));
+    assert.equal(scripts, optOut ? 1 : 2);
+    assert.equal(executions, optOut ? 0 : 1);
+    assert.equal(posts.length, optOut ? 0 : 1);
+    if (!optOut) { assert.equal(posts[0].diagnostic, true); assert.equal(statuses.at(-1), "submitted"); }
   }
 });

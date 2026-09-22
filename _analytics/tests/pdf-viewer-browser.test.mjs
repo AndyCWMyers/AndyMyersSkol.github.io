@@ -115,6 +115,35 @@ test("real generic viewer desktop/mobile: rendering, native controls, hooks, has
     await page.waitForFunction(() => window.PDFViewerApplication?.pdfViewer.getPageView(0)?.renderingState === 3);
     assert.deepEqual(analytics, []);
     await page.close();
+    // Real script ordering: score a delayed/failed renderer without fabricating a view.
+    const early = await browser.newContext({ viewport: { width: 390, height: 844 } });
+    let googleCalls = 0, releaseBytes;
+    const bytesReady = new Promise(resolve => { releaseBytes = resolve; });
+    await early.route("**/__analytics/engagement.js", async route => {
+      const response = await route.fetch();
+      await route.fulfill({ response, body: await response.text() + '\nwindow.acwRecaptchaSiteKey="test-public-key";' });
+    });
+    await early.route("https://www.google.com/recaptcha/api.js?*", route => {
+      googleCalls++;
+      return route.fulfill({ contentType: "text/javascript", body: 'window.grecaptcha={ready:callback=>callback(),execute:async()=>"test-token-not-a-real-credential"};' });
+    });
+    await early.route("**/preview.pdf?__pdf=raw", async route => { await bytesReady; await route.continue(); });
+    const earlyPage = await early.newPage();
+    const startIndex = events.length;
+    const assessmentSent = earlyPage.waitForResponse(response => response.url().endsWith("/__analytics/assessment"));
+    await earlyPage.goto(base + "/preview.pdf?diagnostics=on", { waitUntil: "domcontentloaded" });
+    await assessmentSent;
+    assert.equal(events.slice(startIndex).filter(row => row.endpoint === "/__analytics/event").length, 0);
+    const earlyAssessment = events.slice(startIndex).find(row => row.endpoint === "/__analytics/assessment");
+    assert.equal(earlyAssessment.body.diagnostic, true);
+    const readingStarted = earlyPage.waitForResponse(response => response.url().endsWith("/__analytics/engagement"));
+    releaseBytes();
+    await earlyPage.waitForFunction(() => window.PDFViewerApplication?.pdfViewer.getPageView(0)?.renderingState === 3);
+    await readingStarted;
+    assert.equal(events.slice(startIndex).filter(row => row.endpoint === "/__analytics/assessment").length, 1);
+    assert.equal(googleCalls, 1);
+    assert.equal(events.slice(startIndex).find(row => row.endpoint === "/__analytics/event").body.id, earlyAssessment.body.id);
+    await early.close();
   } finally {
     await browser.close();
     await new Promise(resolve => server.close(resolve));

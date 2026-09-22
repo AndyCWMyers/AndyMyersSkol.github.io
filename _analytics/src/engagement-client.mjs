@@ -203,4 +203,5 @@ export default String.raw`(() => {
   }
 
   window.acwStartEngagement = startEngagement;
+  window.acwAssessPdf = id => assessVisit(id, "pdf_view", () => {}, true);
 })();`;

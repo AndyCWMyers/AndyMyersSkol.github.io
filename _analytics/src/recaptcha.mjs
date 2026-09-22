@@ -2,7 +2,8 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{1
 
 export function validAssessment(body) {
   return body && UUID.test(body.id || "") && typeof body.token === "string"
-    && body.token.length >= 20 && body.token.length <= 12000;
+    && body.token.length >= 20 && body.token.length <= 12000
+    && (body.diagnostic === undefined || body.diagnostic === true);
 }
 
 export function verifiedScore(value, hostname, action, now) {
@@ -18,12 +19,29 @@ export async function assessVisit(env, body, visitor, hostname, now = Date.now()
   if (!validAssessment(body)) return 400;
   // Atomically reserve one assessment per visit. Retries and concurrent requests
   // cannot repeatedly consume Google quota or overwrite the first score.
-  const claimed = await env.DB.prepare(`UPDATE reading_sessions SET recaptcha_status = 'pending'
+  const diagnostic = body.diagnostic === true;
+  const table = diagnostic ? "pdf_diagnostics" : "reading_sessions";
+  const other = diagnostic ? "reading_sessions" : "pdf_diagnostics";
+  const time = diagnostic ? "occurred_at" : "started_at";
+  const claimed = await env.DB.prepare(`UPDATE ${table} SET recaptcha_status = 'pending'
     WHERE id = ? AND visitor_hash = ? AND recaptcha_status = 'unassessed'
-      AND started_at >= ? AND started_at <= ? AND is_personal = 0
+      AND ${time} >= ? AND ${time} <= ? AND is_personal = 0
       AND visitor_hash NOT IN (SELECT visitor_hash FROM personal_visitors)
-    RETURNING kind`).bind(body.id, visitor, Math.floor(now / 1000) - 600, Math.floor(now / 1000) + 60).all();
-  if (!claimed.results.length) return 204;
+      ${diagnostic ? "AND route = 'viewer' AND bot = 0" : ""}
+      AND NOT EXISTS (SELECT 1 FROM ${other} o WHERE o.id = ${table}.id
+        AND o.visitor_hash = ${table}.visitor_hash AND o.recaptcha_status <> 'unassessed')
+    RETURNING ${diagnostic ? "'pdf_request' AS kind" : "kind"}`)
+    .bind(body.id, visitor, Math.floor(now / 1000) - 600, Math.floor(now / 1000) + 60).all();
+  if (!claimed.results.length) {
+    // A fresh viewer may beat its asynchronous diagnostic insert. Let the bounded
+    // client retry recover that race without consuming an assessment token twice.
+    if (diagnostic) {
+      const exists = await env.DB.prepare("SELECT id FROM pdf_diagnostics WHERE id = ? AND visitor_hash = ?")
+        .bind(body.id, visitor).all();
+      if (!exists.results.length) return 404;
+    }
+    return 204;
+  }
   const action = claimed.results[0].kind === "pdf_request" ? "pdf_view" : "homepage_view";
   let score = null, status = "unavailable";
   try {
@@ -46,8 +64,15 @@ export async function assessVisit(env, body, visitor, hostname, now = Date.now()
       : error?.name === "SyntaxError" ? "unavailable_response" : "unavailable_network";
   }
   // Store no tokens, secrets, Google cookies, or additional visitor identifiers.
-  await env.DB.prepare(`UPDATE reading_sessions SET recaptcha_score = ?, recaptcha_at = ?, recaptcha_status = ?
+  const result = env.DB.prepare(`UPDATE ${table} SET recaptcha_score = ?, recaptcha_at = ?, recaptcha_status = ?
     WHERE id = ? AND visitor_hash = ? AND recaptcha_status = 'pending'`)
-    .bind(score, score === null ? null : Math.floor(now / 1000), status, body.id, visitor).run();
+    .bind(score, score === null ? null : Math.floor(now / 1000), status, body.id, visitor);
+  if (diagnostic) {
+    // Rendering can finish during verification. A later session copies the result
+    // at insertion; an already-created one receives it here, never a new session.
+    await env.DB.batch([result, env.DB.prepare(`UPDATE reading_sessions SET recaptcha_score = ?, recaptcha_at = ?, recaptcha_status = ?
+      WHERE id = ? AND visitor_hash = ? AND recaptcha_status IN ('pending','unassessed')`)
+      .bind(score, score === null ? null : Math.floor(now / 1000), status, body.id, visitor)]);
+  } else await result.run();
   return 204;
 }

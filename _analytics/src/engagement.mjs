@@ -22,10 +22,13 @@ export async function recordReferenceDownload(db, id) {
 
 export async function startReading(db, id, visitor) {
   if (!visitor) return;
-  await db.prepare(`INSERT OR IGNORE INTO reading_sessions(id, visitor_hash, path, kind, is_personal, started_at, last_seen)
-    SELECT id, visitor_hash, CASE WHEN path IN ('/index','/index.html') THEN '/' ELSE path END,
-      kind, is_personal, occurred_at, occurred_at FROM events
-    WHERE id = ? AND visitor_hash = ? AND bot = 0 AND duplicate_of = '' AND kind IN ('page_view','pdf_request')`)
+  await db.prepare(`INSERT OR IGNORE INTO reading_sessions(id, visitor_hash, path, kind, is_personal, started_at, last_seen,
+      recaptcha_score, recaptcha_at, recaptcha_status)
+    SELECT e.id, e.visitor_hash, CASE WHEN e.path IN ('/index','/index.html') THEN '/' ELSE e.path END,
+      e.kind, e.is_personal, e.occurred_at, e.occurred_at,
+      d.recaptcha_score, d.recaptcha_at, COALESCE(d.recaptcha_status, 'unassessed')
+    FROM events e LEFT JOIN pdf_diagnostics d ON d.id = e.id AND d.visitor_hash = e.visitor_hash AND d.route = 'viewer'
+    WHERE e.id = ? AND e.visitor_hash = ? AND e.bot = 0 AND e.duplicate_of = '' AND e.kind IN ('page_view','pdf_request')`)
     .bind(id, visitor).run();
 }
 

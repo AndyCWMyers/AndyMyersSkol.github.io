@@ -4,6 +4,11 @@ import { automatedClient } from "./automated-client.mjs";
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const ERRORS = new Set(["render_error", "document_error", "initialization_error", "script_error", "runtime_error", "promise_error", "unsupported_browser", "startup_timeout", "tracking_http", "tracking_network", "engagement_start_error"]);
 const STAGES = { started: "started_at", initialized: "initialized_at", loaded: "loaded_at", rendered: "rendered_at" };
+const ERROR_DETAIL = {
+  name: new Set(["Error", "TypeError", "ReferenceError", "SyntaxError", "RangeError", "AbortError", "NetworkError", "InvalidPDFException", "MissingPDFException", "UnexpectedResponseException", "PasswordException", "UnknownErrorException"]),
+  category: new Set(["unsupported_api", "network", "worker", "password", "invalid_pdf", "memory", "aborted"]),
+  source: new Set(["viewer.mjs", "pdf.mjs", "pdf.worker.mjs", "acw-viewer.js", "acw-diagnostics.js", "engagement.js"]),
+};
 let cleanupDay = "";
 
 function header(request, name, limit) {
@@ -30,14 +35,17 @@ export async function recordPdfDiagnostic(db, request, { id, path, reason, statu
 
 export function validDiagnosticSignal(body) {
   return body && UUID.test(body.id || "") && (Object.hasOwn(STAGES, body.stage) || body.stage === "error")
+    && (body.detail === undefined || (body.detail && typeof body.detail === "object" && !Array.isArray(body.detail)
+      && Object.entries(body.detail).every(([key, value]) => key === "line"
+        ? Number.isInteger(value) && value > 0 && value <= 1000000 : Object.hasOwn(ERROR_DETAIL, key) && ERROR_DETAIL[key].has(value))))
     && (body.stage !== "error" || (ERRORS.has(body.code) && Number.isInteger(body.status) && body.status >= 0 && body.status <= 599));
 }
 
 export async function updatePdfDiagnostic(db, body, visitor, now = Math.floor(Date.now() / 1000)) {
   const field = STAGES[body.stage];
-  const set = body.stage === "error" ? "error_code = ?, error_status = ?, error_at = ?" : `${field} = ?`;
+  const set = body.stage === "error" ? "error_code = ?, error_status = ?, error_at = ?, error_detail = ?" : `${field} = ?`;
   const empty = body.stage === "error" ? "error_at = 0" : `${field} = 0`;
-  const values = body.stage === "error" ? [body.code, body.status, now] : [now];
+  const values = body.stage === "error" ? [body.code, body.status, now, JSON.stringify(body.detail || {})] : [now];
   const result = await db.prepare(`UPDATE pdf_diagnostics SET ${set}
     WHERE id = ? AND visitor_hash = ? AND route = 'viewer' AND occurred_at >= ? AND ${empty}`)
     .bind(...values, body.id, visitor, now - 86400).run();
@@ -53,12 +61,14 @@ export async function pdfDiagnostics(db, dates, excludePersonal, user = "", offs
     d.range_header AS range, d.started_at AS startedAt, d.initialized_at AS initializedAt,
     d.loaded_at AS loadedAt, d.rendered_at AS renderedAt,
     d.error_code AS errorCode, d.error_status AS errorStatus, d.error_at AS errorAt,
+    d.error_detail AS errorDetail, d.recaptcha_score AS botScore, d.recaptcha_status AS assessmentStatus,
     EXISTS(SELECT 1 FROM reading_sessions s WHERE s.id = d.id AND s.visitor_hash = d.visitor_hash AND s.measurement_source = 'viewer') AS confirmed
     FROM pdf_diagnostics d WHERE d.occurred_at >= ? AND d.occurred_at < ?
     ${user ? "AND substr(d.visitor_hash,1,24) = ?" : ""} ${path ? "AND d.path = ?" : ""}
     ${excludePersonal ? "AND d.is_personal = 0 AND NOT EXISTS(SELECT 1 FROM personal_visitors p WHERE p.visitor_hash = d.visitor_hash)" : ""}
     ORDER BY d.occurred_at DESC, d.id LIMIT 51 OFFSET ?`)
     .bind(dates.from, dates.until, ...(user ? [user] : []), ...(path ? [path] : []), offset).all();
-  return { rows: result.results.slice(0, 50).map(row => ({ ...row, automatedClient: automatedClient(row.userAgent) })),
+  return { rows: result.results.slice(0, 50).map(row => ({ ...row,
+    errorDetail: row.errorDetail ? JSON.parse(row.errorDetail) : null, automatedClient: automatedClient(row.userAgent) })),
     nextOffset: result.results.length > 50 ? offset + 50 : null, measured: ["pdfDiagnostics", result] };
 }

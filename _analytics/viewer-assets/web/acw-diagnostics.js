@@ -18,7 +18,32 @@
     else document.addEventListener("DOMContentLoaded", fallback, { once: true });
   }
 
-  function signal(stage, code, status) {
+  function errorDetail(error) {
+    if (!error) return {};
+    var detail = {}, name = String(error.name || "");
+    if (/^(Error|TypeError|ReferenceError|SyntaxError|RangeError|AbortError|NetworkError|InvalidPDFException|MissingPDFException|UnexpectedResponseException|PasswordException|UnknownErrorException)$/.test(name)) detail.name = name;
+    var message = String(typeof error === "string" ? error : error.message || "").slice(0, 2000);
+    var categories = [
+      ["unsupported_api", /not a function|not defined|withResolvers|URL\.parse|sumPrecise|fromBase64/i],
+      ["network", /fetch|network|load failed|loading.*module|import.*module/i],
+      ["worker", /worker/i], ["password", /password/i],
+      ["invalid_pdf", /invalid pdf|invalidpdf|missing pdf|missingpdf/i],
+      ["memory", /memory|allocation/i], ["aborted", /abort|cancel/i]
+    ];
+    for (var i = 0; i < categories.length; i++) {
+      if (categories[i][1].test(message)) { detail.category = categories[i][0]; break; }
+    }
+    var source = String(error.filename || error.stack || "").slice(0, 4000);
+    var match = source.match(/\/__(?:pdfjs\/(?:web|build)|analytics)\/(viewer\.mjs|pdf\.mjs|pdf\.worker\.mjs|acw-viewer\.js|acw-diagnostics\.js|engagement\.js)(?::(\d+))?/);
+    if (match) {
+      detail.source = match[1];
+      var line = Number(match[2] || error.lineno);
+      if (line > 0 && line <= 1000000 && Math.floor(line) === line) detail.line = line;
+    }
+    return detail;
+  }
+
+  function signal(stage, code, status, error) {
     if (stage === "rendered") { rendered = true; clearTimeout(timer); }
     if (!allowed() || sent[stage] || typeof fetch !== "function") return;
     sent[stage] = true;
@@ -26,7 +51,7 @@
       if (!allowed()) return;
       fetch("/__analytics/pdf-diagnostic", { method: "POST", credentials: "same-origin",
         headers: { "Content-Type": "text/plain" }, keepalive: true,
-        body: JSON.stringify({ id: id, stage: stage, code: code || "", status: status || 0 })
+        body: JSON.stringify({ id: id, stage: stage, code: code || "", status: status || 0, detail: errorDetail(error) })
       }).then(function (response) {
         if ((response.status === 404 || response.status >= 500) && attempt < 2)
           setTimeout(function () { send(attempt + 1); }, 1000 * (attempt + 1));
@@ -37,11 +62,11 @@
     send(0);
   }
 
-  function fail(code) {
+  function fail(code, error) {
     if (rendered) return;
     clearTimeout(timer);
     fallback();
-    signal("error", code);
+    signal("error", code, 0, error);
   }
 
   function ownScript(url) {
@@ -50,12 +75,12 @@
   }
 
   function onError(event) {
-    if (event.target && event.target.tagName === "SCRIPT" && ownScript(event.target.src)) fail("script_error");
-    else if (ownScript(event.filename)) fail("runtime_error");
+    if (event.target && event.target.tagName === "SCRIPT" && ownScript(event.target.src)) fail("script_error", { filename: event.target.src });
+    else if (ownScript(event.filename)) fail("runtime_error", event.error || event);
   }
 
   function onRejection(event) {
-    if (!rendered && ownScript(event.reason && event.reason.stack)) fail("promise_error");
+    if (!rendered && ownScript(event.reason && event.reason.stack)) fail("promise_error", event.reason);
   }
 
   function watch() {

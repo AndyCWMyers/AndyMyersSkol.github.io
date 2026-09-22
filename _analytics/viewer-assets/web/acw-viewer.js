@@ -17,8 +17,8 @@
       !(document.cookie || "").split(";").some(part => part.trim() === "__Host-acw_ignore=1");
   }
 
-  function diagnose(stage, code = "", status = 0) {
-    window.acwPdfDiagnostic?.signal(stage, code, status);
+  function diagnose(stage, code = "", status = 0, error) {
+    window.acwPdfDiagnostic?.signal(stage, code, status, error);
   }
 
   async function start() {
@@ -104,7 +104,7 @@
       diagnose("initialized");
       app.eventBus.on("documentloaded", () => diagnose("loaded"));
       app.eventBus.on("pagerendered", event => {
-        if (event.error) { showError("render_error"); return; }
+        if (event.error) { showError("render_error", event.error); return; }
         if (event.cssTransform) return;
         if (!rendered) window.acwPdfRenderMs = performance.now();
         rendered = true;
@@ -114,15 +114,15 @@
         void start();
       });
       app.eventBus.on("download", onDownload);
-      app.eventBus.on("documenterror", () => showError("document_error"));
-    }).catch(() => showError("initialization_error"));
+      app.eventBus.on("documenterror", event => showError("document_error", event?.reason || event));
+    }).catch(error => showError("initialization_error", error));
   }
 
-  function showError(code) {
-    diagnose("error", code);
+  function showError(code, error) {
+    diagnose("error", code, 0, error);
     const message = document.querySelector("#acwPdfError");
     if (message) message.hidden = false;
-    else document.addEventListener("DOMContentLoaded", showError, { once: true });
+    else document.addEventListener("DOMContentLoaded", () => { const message = document.querySelector("#acwPdfError"); if (message) message.hidden = false; }, { once: true });
     tracker?.stop();
   }
 
@@ -130,7 +130,7 @@
     if (event.target?.tagName === "SCRIPT" && /\/__(?:pdfjs|analytics)\//.test(event.target.src)) showError("script_error");
   }
 
-  document.addEventListener("webviewerloaded", () => { try { configure(); } catch { showError("initialization_error"); } }, { once: true });
+  document.addEventListener("webviewerloaded", () => { try { configure(); } catch (error) { showError("initialization_error", error); } }, { once: true });
   document.addEventListener("visibilitychange", start);
   window.addEventListener("pageshow", start);
   window.addEventListener("pagehide", () => clearTimeout(retryTimer));
@@ -139,4 +139,6 @@
   document.addEventListener("change", blockLocalFile, { capture: true });
   window.addEventListener("error", onScriptError, { capture: true });
   diagnose("started");
+  // Scoring does not start the reading timer or mark the PDF as rendered.
+  if (allowed() && diagnosticId) window.acwAssessPdf?.(diagnosticId)?.catch(() => {});
 })();

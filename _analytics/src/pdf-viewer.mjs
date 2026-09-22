@@ -8,7 +8,14 @@ export function isPdfNavigation(request) {
 export function pdfNavigationReason(request) {
   if (request.method !== "GET") return "method";
   if (request.headers.has("Range")) return "range_request";
-  const destination = request.headers.get("Sec-Fetch-Dest"), mode = request.headers.get("Sec-Fetch-Mode");
+  // Some proxies repeat singleton headers. Only collapse identical values.
+  const singleton = name => {
+    const value = request.headers.get(name);
+    if (!value) return value;
+    const parts = value.split(",").map(part => part.trim());
+    return parts.every(part => part === parts[0]) ? parts[0] : value;
+  };
+  const destination = singleton("Sec-Fetch-Dest"), mode = singleton("Sec-Fetch-Mode");
   if (destination && !["document", "iframe"].includes(destination)) return "non_document_destination";
   if (mode && mode !== "navigate") return "non_navigation_mode";
   // Explicit document navigation is sufficient even without HTML in Accept.

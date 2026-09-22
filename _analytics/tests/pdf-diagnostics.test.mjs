@@ -35,7 +35,22 @@ test("routing reasons preserve navigation behavior and identify raw-client decis
     [{ Accept: "text/html", Range: "bytes=0-" }, "range_request"],
     [{ Accept: "text/html", "Sec-Fetch-Dest": "embed" }, "non_document_destination"],
     [{ Accept: "text/html", "Sec-Fetch-Mode": "cors" }, "non_navigation_mode"],
+    [{ "Sec-Fetch-Dest": "document, document", "Sec-Fetch-Mode": "navigate, navigate" }, "viewer"],
+    [{ Accept: "text/html", "Sec-Fetch-Dest": "document, empty", "Sec-Fetch-Mode": "navigate" }, "non_document_destination"],
+    [{ Accept: "text/html", "Sec-Fetch-Dest": "document", "Sec-Fetch-Mode": "navigate, cors" }, "non_navigation_mode"],
+    [{ Accept: "text/html", "Sec-Fetch-Dest": "empty, empty" }, "non_document_destination"],
   ]) assert.equal(pdfNavigationReason(new Request(ORIGIN + PDF, { headers })), reason);
+});
+
+test("diagnostic error details accept only bounded categories and never private messages", async () => {
+  const h = setup(), v = await viewer(h);
+  const body = { id: v.id, stage: "error", code: "promise_error", status: 0,
+    detail: { name: "TypeError", category: "unsupported_api", source: "viewer.mjs", line: 123 } };
+  for (const detail of [{ message: "private" }, { source: "https://example.com/private" }, { line: 1000001 }, { name: "secret" }, { constructor: "oops" }]) {
+    assert.equal((await h.fetch("/__analytics/pdf-diagnostic", post({ ...body, detail }, v.cookie))).status, 400);
+  }
+  assert.equal((await h.fetch("/__analytics/pdf-diagnostic", post(body, v.cookie))).status, 204);
+  assert.deepEqual(JSON.parse(h.db.prepare("SELECT error_detail FROM pdf_diagnostics").get().error_detail), body.detail);
 });
 
 test("viewer diagnostics are linked, private, bounded and separate from view totals", async () => {

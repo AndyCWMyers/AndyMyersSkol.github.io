@@ -276,7 +276,7 @@ A central question about democracy is whether elected officials adapt their poli
         <li data-number="2" data-acw-section="4" data-acw-item="14">
             State Legislative Primary Election Returns Database, 1990–2026 (Joint with Steven Rogers, Alexander Fouirnaies, Andrew B. Hall, Cassandra Handan-Nader, and Jason Windett).
             <div class="abstract-container">
-                <a href="https://github.com/AndyCWMyers/state-legislative-primary-returns" target="_blank" class="replication-link">Link to database</a>
+                <a href="https://github.com/AndyCWMyers/state-legislative-primary-returns" target="_blank" class="replication-link dataset-link"><span class="dropdown-arrow" aria-hidden="true">▶</span> Link to database</a>
             </div>
         </li>
     </ul>
@@ -362,6 +362,12 @@ ul.numbered li::before {
 }
 .replication-link:hover {
     text-decoration: underline;
+}
+/* Match the Summary control only for the direct dataset link. */
+#data .dataset-link {
+    display: inline-block;
+    margin-top: 6px;
+    font-weight: bold;
 }
 /* Style for the vertical separator "|" */
 .separator {

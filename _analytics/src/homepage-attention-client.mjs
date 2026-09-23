@@ -77,7 +77,8 @@ export default String.raw`function homepageAttention({ bucket, active, allowed }
       detail.addEventListener("toggle", toggle);
       details.push([detail, toggle]);
     }
-    return { sample, initialize: state, detach() {
+    // Rotate long homepage sessions before expanded item counters exceed keepalive limits.
+    return { maxHours: 64, sample, initialize: state, detach() {
       observer?.disconnect();
       window.removeEventListener("scroll", scroll);
       for (const [detail, toggle] of details) detail.removeEventListener("toggle", toggle);

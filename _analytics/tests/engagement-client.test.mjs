@@ -386,3 +386,25 @@ test("homepage attention shares checkpoints, respects visibility, tracks scroll 
   await pdf.tick(); pdf.handle.stop();
   assert.equal(latest(pdf).hours[0].attention, undefined);
 });
+
+// An expanded homepage catalog must not overflow fetch keepalive after a long visit.
+test("homepage rotates at 64 hours while preserving the prior session", async () => {
+  const nodes = Array.from({ length: 16 }, (_, i) => ({
+    dataset: { acwSection: "2", acwItem: String(i + 1) },
+    getBoundingClientRect: () => ({ top: 0, bottom: 100, left: 0, right: 600, height: 100 }),
+    querySelector: () => null,
+  }));
+  const h = browser({ kind: "page_view", nodes, start: Date.UTC(2026, 8, 23, 7) });
+  for (let i = 0; i < 64; i++) {
+    if (i) await h.tick(3600000);
+    await h.tick(1000);
+  }
+  await h.tick(3600000);
+  await h.tick(1000);
+  const old = h.requests.filter(r => r.url.endsWith("/engagement") && r.body.id === "view-1").at(-1).body;
+  assert.equal(old.hours.length, 64);
+  assert.equal(old.active, false);
+  assert(Buffer.byteLength(JSON.stringify(old)) < 64512);
+  assert(h.requests.some(r => r.url.endsWith("/event") && r.body.kind === "page_view"));
+  assert.notEqual(latest(h).id, old.id);
+});

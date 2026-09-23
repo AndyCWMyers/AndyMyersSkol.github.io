@@ -73,7 +73,7 @@ Sequence checks and cumulative counters prevent retries or out-of-order delivery
 from adding time/downloads twice; session and bucket writes are transactional.
 Index maintenance can increase billable D1 writes beyond the number of logical
 rows. Hour buckets preserve Pacific date filtering, including DST and sessions
-crossing midnight. A session with 128 distinct observed hours rotates to a new
+crossing midnight. A session with 128 distinct observed hours (64 for homepage attention) rotates to a new
 view ID; normal visits do not rotate. `liveAt` comes from an active check-in, with
 a 315-second freshness tolerance; a received pause clears it immediately. This
 is recent activity, not guaranteed real-time presence.

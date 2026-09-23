@@ -7,6 +7,7 @@ import { startReading, saveReading, historyReading } from "../src/engagement.mjs
 import { clientDetails, validInteractions } from "../src/visit-details.mjs";
 import { pdfPageReport } from "../src/pdf-page-report.mjs";
 import { homepageReport } from "../src/homepage-report.mjs";
+import { HOMEPAGE_ITEMS } from "../src/homepage-attention.mjs";
 
 const origin = "https://www.andrewcwmyers.com", visitor = "a".repeat(64);
 const now = Date.parse("2026-09-18T12:00:00Z"), hour = now / 1000 - 3600;
@@ -108,7 +109,7 @@ test("homepage averages combine hours per session and preserve filters and missi
   const url = origin + "/__analytics/report?view=homepage_attention&section=main&name=/&start=2026-09-18&end=2026-09-18";
   assert.equal((await worker.fetch(new Request(url), env, {})).status, 401);
   const response = await worker.fetch(new Request(url, { headers }), env, {}), value = await response.json();
-  assert.equal(response.status, 200); assert.equal(value.queryUsage.queryCount, 1); assert.equal(value.homepageItems.length, 15);
+  assert.equal(response.status, 200); assert.equal(value.queryUsage.queryCount, 1); assert.equal(value.homepageItems.length, HOMEPAGE_ITEMS.length);
   for (const [key, invalid] of [["page", "/paper.pdf"], ["name", "/paper.pdf"], ["section", "outbound"]]) {
     const invalidUrl = new URL(url); invalidUrl.searchParams.set(key, invalid);
     assert.equal((await worker.fetch(new Request(invalidUrl, { headers }), env, {})).status, 400);

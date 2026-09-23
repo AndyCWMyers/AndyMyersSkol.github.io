@@ -264,8 +264,8 @@ test("attention payloads are bounded, omit short exposures, and match stable hom
   for (const change of [{ depth: 101 }, { scrolled: true }, { sections: 32 }, { arbitrary: "untrusted" }, { items: [[99, 0, 0, 0]] }, { items: [[1, 0, 0, 1]] }, { items: [[1, 0, 1001, 0]] }, { items: [[1, 0, 0, 0], [1, 0, 0, 0]] }]) {
     assert.equal(validAttention({ ...attention, ...change }, 3600000), false);
   }
-  const payload = snapshot(crypto.randomUUID(), { hours: Array.from({ length: 128 }, (_, i) => ({ hour: midnight - i * 3600, milliseconds: 3600000, downloads: 0, attention })) });
-  assert.ok(Buffer.byteLength(JSON.stringify(payload)) < 64512, "even 128 full hours fit below the 64 KiB keepalive limit");
+  const payload = snapshot(crypto.randomUUID(), { hours: Array.from({ length: 64 }, (_, i) => ({ hour: midnight - i * 3600, milliseconds: 3600000, downloads: 0, attention })) });
+  assert.ok(Buffer.byteLength(JSON.stringify(payload)) < 64512, "64 full homepage hours fit below the 64 KiB keepalive limit");
   assert.equal(summarizeAttention([null]), undefined);
   assert.deepEqual(summarizeAttention([{ depth: 20, scrolled: 0, sections: 0, items: [[1, 1000, 0, 0], [2, 0, 1, 0]] }]).items.map(item => item.id), [2]);
   const html = readFileSync(new URL("../../index.html", import.meta.url), "utf8");

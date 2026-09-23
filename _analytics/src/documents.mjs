@@ -9,6 +9,7 @@ const papers = [
   { name: "/wu_et_al_fraud.pdf", title: "Are Dead People Voting By Mail? Evidence From Washington State Administrative Records" },
   { name: "/yoder_et_al_2021_turnout.pdf", title: "How Did Absentee Voting Impact the 2020 U.S. Election?" },
   { name: "/bethlendy_chen_myers_earmark_RD.pdf", title: "Partisan Favoritism in Public Spending: Evidence from Congressional Earmarks" },
+  { name: "/myers_et_al_stateleg_primary_elec_data.pdf", title: "State Legislative Primary Election Returns Database, 1990–2026" },
   { name: "/asher_et_al_LLM_sycophancy.pdf", title: "Do Claude Code and Codex P-Hack? Sycophancy and Statistical Analysis in Large Language Models" },
   { name: "/myers_redistricting.pdf", title: "How Do Legislators Adapt to New Electorates? Evidence from Redistricting in Congress and American State Legislatures" },
 ];

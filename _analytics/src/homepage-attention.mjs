@@ -10,13 +10,14 @@ export const HOMEPAGE_ITEMS = [
   [5, "/wu_et_al_fraud.pdf", 1],
   [6, "/yoder_et_al_2021_turnout.pdf", 1],
   [7, "/bethlendy_chen_myers_earmark_RD.pdf", 2],
+  [16, "/myers_et_al_stateleg_primary_elec_data.pdf", 2],
   [8, "/asher_et_al_LLM_sycophancy.pdf", 2],
   [9, "/myers_redistricting.pdf", 2],
   [10, "Do Interest Group Endorsements Influence American Elections?", 3],
   [11, "From Dollars to Ideal Points: Adjusting Campaign Finance Scalings for Co-Participation Bias", 3],
   [12, "The Hidden Incumbency Advantage: How Officeholding Shapes Intra-Party Competition in American Legislative and Executive Elections", 3],
   [13, "How Much Turnover Is There in U.S. Voter Registration Lists?", 3],
-  [14, "State Legislative Primary Election Returns Dataset, 1990-2024", 4],
+  [14, "State Legislative Primary Election Returns Database, 1990–2026", 4],
   [15, "State Voter Registration Panel, 2010-2022", 4],
 ].map(([id, name, section]) => ({ id, title: documents.find(doc => doc.name === name)?.title || name, section: SECTIONS[section] }));
 

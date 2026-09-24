@@ -63,12 +63,13 @@ export function pdfViewerResponse(path, measurementId, trackingEnabled = true, d
   const html = viewerHTML
     .replace("<head>", "<head>\n" + head)
     .replace("<title>PDF.js viewer</title>", `<title>${escapeAttribute(title)}</title>`)
-    .replace('<body tabindex="0">', `<body tabindex="0">
+    .replace('<body tabindex="0">', `<body tabindex="0"${trackingEnabled ? ' class="acw-recaptcha-notice"' : ""}>
+    ${trackingEnabled ? '<footer class="acwRecaptchaNotice">This site is protected by reCAPTCHA.</footer>' : ""}
     <noscript><p class="acwPdfFallback">${rawLink}</p></noscript>
     <p id="acwPdfError" class="acwPdfFallback" role="alert" hidden>PDF preview unavailable. ${rawLink}</p>`)
     .replace("script-src 'self' 'wasm-unsafe-eval';", "script-src 'self' 'wasm-unsafe-eval' https://www.google.com/recaptcha/ https://www.gstatic.com/recaptcha/;")
     .replace("connect-src * blob: data:; base-uri 'none';", "connect-src 'self' blob: data: https://www.google.com/recaptcha/; frame-src https://www.google.com/recaptcha/ https://recaptcha.google.com/recaptcha/; base-uri 'self';")
-    .replace('<link rel="stylesheet" href="viewer.css" />', '<link rel="stylesheet" href="viewer.css" />\n<link rel="stylesheet" href="acw-viewer.css" />');
+    .replace('<link rel="stylesheet" href="viewer.css" />', '<link rel="stylesheet" href="viewer.css" />\n<link rel="stylesheet" href="acw-viewer.css?v=20260924-1" />');
   return new Response(html, { headers: {
     "Content-Type": "text/html; charset=utf-8",
     "Cache-Control": "private, no-store",

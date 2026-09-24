@@ -1,3 +1,12 @@
+/* The footer retains reCAPTCHA attribution without an overlapping badge. */
+.grecaptcha-badge { visibility: hidden !important; }
+.recaptcha-notice {
+    padding: 12px 16px;
+    color: #666;
+    font: 12px/1.5 Arial, sans-serif;
+    text-align: center;
+}
+
 /* styles.css */
 body {
     font-family: 'Arial', sans-serif;
@@ -167,7 +176,6 @@ a:hover {
     text-overflow: ellipsis; /* Adds an ellipsis to indicate overflowed content */
     max-width: 100%; /* Ensures these elements do not exceed the container's width */
 }
-
 
 
 

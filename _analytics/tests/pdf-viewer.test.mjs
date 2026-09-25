@@ -24,11 +24,8 @@ test("viewer advertises a dedicated metadata PDF without changing normal viewer 
   assert.match(html, /href="\/andrew_c_w_myers_CV.pdf\?__pdf=raw"/);
 });
 
-test("viewer replaces badge with a brief attribution only when tracking is enabled", async () => {
-  const enabled = await pdfViewerResponse('/andrew_c_w_myers_CV.pdf').text();
-  assert.match(enabled, /<footer class="acwRecaptchaNotice">This site is protected by reCAPTCHA\.<\/footer>/);
-  assert.match(enabled, /class="acw-recaptcha-notice"/);
-  assert.doesNotMatch(await pdfViewerResponse('/andrew_c_w_myers_CV.pdf', '', false).text(), /acwRecaptchaNotice|acw-recaptcha-notice/);
+test("viewer adds no reCAPTCHA footer", async () => {
+  assert.doesNotMatch(await pdfViewerResponse('/andrew_c_w_myers_CV.pdf').text(), /protected by reCAPTCHA|acwRecaptchaNotice/);
 });
 
 async function bootstrap({ tracking = true, privacy = {}, cookie = "", visible = true, diagnosticId = "", paperTitle = "Paper Title" } = {}) {

@@ -54,12 +54,6 @@ test("real generic viewer desktop/mobile: rendering, native controls, hooks, has
         return dark;
       });
       assert(pixels > 100, "actual PDF content must render, not a blank canvas");
-      assert.equal(await page.locator(".acwRecaptchaNotice").innerText(), "This site is protected by reCAPTCHA.");
-      assert.equal(await page.evaluate(() => {
-        const footer = document.querySelector(".acwRecaptchaNotice").getBoundingClientRect();
-        return footer.bottom <= innerHeight && footer.left >= 0 && footer.right <= innerWidth
-          && document.querySelector("#viewerContainer").getBoundingClientRect().bottom <= footer.top;
-      }), true, "attribution must not cover the PDF or overflow on mobile");
       assert.equal(await page.evaluate(() => {
         const badge = document.createElement("div"); badge.className = "grecaptcha-badge";
         badge.style.visibility = "visible"; document.body.appendChild(badge);

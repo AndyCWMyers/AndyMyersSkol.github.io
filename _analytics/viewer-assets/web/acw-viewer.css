@@ -24,18 +24,7 @@
 
 #toolbarContainer { box-shadow: 0 1px 0 #c5c7ca; }
 #mainContainer { min-width: 0; }
-.acw-recaptcha-notice .grecaptcha-badge { visibility: hidden !important; }
-.acw-recaptcha-notice #outerContainer { height: calc(100% - 22px); }
-.acwRecaptchaNotice {
-  position: absolute;
-  inset: auto 0 0;
-  height: 22px;
-  color: #666;
-  background: #f8f9fa;
-  font: 11px/22px system-ui, sans-serif;
-  text-align: center;
-}
-@media print { .acwRecaptchaNotice { display: none; } }
+.grecaptcha-badge { visibility: hidden !important; }
 .toolbarButton { border-radius: 4px; }
 .toolbarField, .dropdownToolbarButton { border-radius: 3px; }
 

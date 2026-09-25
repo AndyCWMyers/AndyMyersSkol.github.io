@@ -1,11 +1,5 @@
-/* The footer retains reCAPTCHA attribution without an overlapping badge. */
+/* Google's floating reCAPTCHA badge is hidden; attribution is added separately. */
 .grecaptcha-badge { visibility: hidden !important; }
-.recaptcha-notice {
-    padding: 12px 16px;
-    color: #666;
-    font: 12px/1.5 Arial, sans-serif;
-    text-align: center;
-}
 
 /* styles.css */
 body {
